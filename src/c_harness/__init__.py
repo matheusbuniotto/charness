@@ -109,12 +109,25 @@ StateFn = Callable[[Context], Transition]
 # ---------------------------------------------------------------------------
 
 def _extract_json(text: str) -> str:
-    """Remove markdown code block se presente."""
+    """Extrai JSON do output — trata JSON puro, markdown code block, ou texto com JSON embutido."""
     text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        inner = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
-        return "\n".join(inner).strip()
+
+    # JSON puro
+    if text.startswith("{"):
+        return text
+
+    # último bloco ```json ... ``` ou ``` ... ```
+    import re
+    blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if blocks:
+        return blocks[-1].strip()
+
+    # último { ... } no texto
+    start = text.rfind("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start:end + 1]
+
     return text
 
 
@@ -152,17 +165,25 @@ def run_claude(
     ]
 
     if allowed_tools:
-        cmd += ["--allowedTools"] + allowed_tools
-
-    cmd.append(prompt)
+        cmd += ["--allowedTools", ",".join(allowed_tools)]
+        # com --allowedTools, prompt via stdin (argumento posicional some)
+        stdin_input = prompt
+    else:
+        cmd.append(prompt)
+        stdin_input = None
 
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        stdin=subprocess.PIPE if stdin_input else None,
         text=True,
         cwd=cwd,
     )
+
+    if stdin_input:
+        process.stdin.write(stdin_input)
+        process.stdin.close()
 
     result_text = ""
     current_msg = ["iniciando..."]
