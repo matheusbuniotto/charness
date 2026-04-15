@@ -233,6 +233,7 @@ def _run_setup() -> None:
     harness_dir.mkdir(exist_ok=True)
     config_file = harness_dir / "config.yml"
     skills_dir = harness_dir / "skills"
+    rules_dir = harness_dir / "rules"
     
     console.print("\n[bold cyan]c-harness setup[/bold cyan]\n")
     
@@ -241,15 +242,24 @@ def _run_setup() -> None:
     else:
         config_content = """# Configuração do c-harness
 harness:
-  # Diretório onde ficam as skills específicas para as runs
+  # Diretório de skills (aplicadas por estado)
   skills_dir: ".harness/skills"
-
   
-  # Skills globais a carregar de ~/.claude/skills ou .claude/skills do projeto.
-  # Se vazio/ausente, carregará TODAS as skills globais encontradas (pode inflar muito o contexto).
+  # Diretório de regras (aplicadas a todos os estados)
+  rules_dir: ".harness/rules"
+
+  # Skills globais de ~/.claude/skills a injetar (descomente para filtrar)
   # global_skills:
   #   - "grug"
   #   - "harness"
+  
+  # Critérios de avaliação globais (aplicados pelo agente de evaluation)
+  evaluation:
+    global_checks:
+      - "Sem TODOs ou placeholders no código"
+      - "Funções com responsabilidade única e clara"
+      - "Sem código morto ou imports não utilizados"
+      - "Nomes descritivos (variáveis, funções, arquivos)"
   
   # Rastreio de uso de tokens e contexto
   metrics:
@@ -269,16 +279,21 @@ agents:
         skills_dir.mkdir(parents=True)
         console.print(f"[green]✓[/green] criado diretório {skills_dir}/")
         
-        # templates
         eval_dir = skills_dir / "evaluation"
         eval_dir.mkdir()
         (eval_dir / "strict-checks.md").write_text("# Avaliação Estrita\n- Verifique nomenclatura clara.\n- Aponte falhas se a complexidade for alta e não houver testes.\n")
-        
         (skills_dir / "implementation.md").write_text("# Regras de Implementação\n- Escreva código limpo e siga o style guide do projeto.\n")
-        
-        console.print(f"  [dim]↳ adicionados templates de skills em {skills_dir}/[/dim]")
+        console.print(f"  [dim]↳ adicionados templates em {skills_dir}/[/dim]")
     else:
-        console.print(f"[yellow]⚠ {skills_dir}/ já existe. Pulando criação de templates.[/yellow]")
+        console.print(f"[yellow]⚠ {skills_dir}/ já existe.[/yellow]")
+
+    if not rules_dir.exists():
+        rules_dir.mkdir(parents=True)
+        console.print(f"[green]✓[/green] criado diretório {rules_dir}/")
+        (rules_dir / "project-rules.md").write_text("# Regras do Projeto\n- Respeite o style guide.\n- Priorize simplicidade.\n")
+        console.print(f"  [dim]↳ adicionado template em {rules_dir}/[/dim]")
+    else:
+        console.print(f"[yellow]⚠ {rules_dir}/ já existe.[/yellow]")
         
     console.print("\n[bold green]Setup concluído![/bold green] Você já pode usar o c-harness neste projeto.\n")
 

@@ -1,0 +1,31 @@
+# Configuração do c-harness
+harness:
+  # Diretório de skills (aplicadas por estado)
+  skills_dir: ".harness/skills"
+  
+  # Diretório de regras (aplicadas a todos os estados)
+  rules_dir: ".harness/rules"
+
+  # Skills globais de ~/.claude/skills a injetar (descomente para filtrar)
+  # global_skills:
+  #   - "grug"
+  #   - "harness"
+  
+  # Critérios de avaliação globais (aplicados pelo agente de evaluation)
+  evaluation:
+    global_checks:
+      - "Sem TODOs ou placeholders no código"
+      - "Funções com responsabilidade única e clara"
+      - "Sem código morto ou imports não utilizados"
+      - "Nomes descritivos (variáveis, funções, arquivos)"
+  
+  # Rastreio de uso de tokens e contexto
+  metrics:
+    save_tokens: true
+    log_file: "metrics.json"
+
+agents:
+  claude:
+    model: "claude-3-5-sonnet-latest"
+  pi:
+    model: "default"

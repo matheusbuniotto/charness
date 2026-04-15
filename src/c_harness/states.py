@@ -8,7 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .git import _run_git, collect_git_context
-from .config import load_skills
+from .config import load_skills, load_rules, config
 from .runner import (
     MAX_RETRIES,
     Context,
@@ -75,10 +75,7 @@ Leia:
 Avalie cada critério do DoD (pass/fail) e os critérios globais abaixo.
 
 Critérios globais (sempre aplicados):
-- Sem TODOs ou placeholders no código
-- Funções com responsabilidade única e clara
-- Sem código morto ou imports não utilizados
-- Nomes descritivos (variáveis, funções, arquivos)
+{global_checks_list}
 
 Retorne SOMENTE um JSON válido (sem markdown):
 {{
@@ -135,7 +132,7 @@ def state_spec_generation(ctx: Context) -> Transition:
 
     raw, usage = run_agent(
         prompt=f"Task: {ctx.task_text}",
-        system_prompt=SPEC_PROMPT + load_skills('spec_generation'),
+        system_prompt=SPEC_PROMPT + load_rules() + load_skills('spec_generation'),
         cwd=ctx.run_dir,
         label="spec",
         allowed_tools=None,  # spec agent não precisa de tools
@@ -179,7 +176,7 @@ def state_spec_edit(ctx: Context) -> Transition:
 
     raw, usage = run_agent(
         prompt=prompt,
-        system_prompt=SPEC_EDIT_PROMPT + load_skills('spec_edit'),
+        system_prompt=SPEC_EDIT_PROMPT + load_rules() + load_skills('spec_edit'),
         cwd=ctx.run_dir,
         label="spec-edit",
         allowed_tools=None,
@@ -284,7 +281,7 @@ Contexto git do projeto:
 
     raw, usage = run_agent(
         prompt=f"Implemente a task descrita em spec.json.{rejection_context}{git_context}",
-        system_prompt=IMPL_PROMPT.format(spec_path=spec_path) + load_skills('implementation'),
+        system_prompt=IMPL_PROMPT.format(spec_path=spec_path) + load_rules() + load_skills('implementation'),
         cwd=ctx.project_dir,
         label="impl",
         allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
@@ -382,7 +379,8 @@ def state_evaluation(ctx: Context) -> Transition:
         system_prompt=EVAL_PROMPT.format(
             spec_path=spec_path,
             impl_summary_path=impl_summary_path,
-        ) + load_skills('evaluation'),
+            global_checks_list="\n".join(f"- {c}" for c in config.global_checks)
+        ) + load_rules() + load_skills('evaluation'),
         cwd=ctx.project_dir,
         label="eval",
         allowed_tools=["Read", "Glob", "Grep"],
