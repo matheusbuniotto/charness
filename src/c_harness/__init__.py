@@ -10,7 +10,10 @@ from typing import Callable
 
 from rich.columns import Columns
 from rich.console import Console
+from rich.panel import Panel
+from rich.rule import Rule
 from rich.spinner import Spinner
+from rich.table import Table
 from rich.text import Text
 
 console = Console()
@@ -343,17 +346,18 @@ def state_evaluation(ctx: Context) -> Transition:
 
     if verdict == "approved":
         console.print("[green]✓[/green] avaliação aprovada")
-        return Transition(next_state="done")
+        _print_eval_results(ctx.eval_result)
+        return Transition(next_state="log")
 
     # reprovado — verificar retries
     retries = ctx.retries.get("implementation", 0)
     if retries >= MAX_RETRIES:
         console.print(f"[red]✗[/red] avaliação reprovada após {MAX_RETRIES + 1} tentativas — escalando para humano")
-        _print_eval_failures(ctx.eval_result)
+        _print_eval_results(ctx.eval_result)
         return Transition(next_state="human_gate_eval", reason="max retries atingido")
 
     console.print(f"[yellow]✗[/yellow] avaliação reprovada — voltando para implementação")
-    _print_eval_failures(ctx.eval_result)
+    _print_eval_results(ctx.eval_result, only_failed=True)
     ctx.retries["implementation"] = retries + 1
     return Transition(next_state="implementation", reason=ctx.eval_result.get("rejection_reason", ""))
 
@@ -365,17 +369,93 @@ def state_human_gate_eval(ctx: Context) -> Transition:
 
     resposta = console.input("[yellow]forçar aprovação mesmo assim?[/yellow] [dim][s/N][/dim] ").strip().lower()
     if resposta in ("s", "sim", "y", "yes"):
-        return Transition(next_state="done", reason="aprovado manualmente pelo humano")
+        return Transition(next_state="log", reason="aprovado manualmente pelo humano")
 
     return Transition(next_state="done", reason="run encerrada pelo humano após falha")
 
 
-def _print_eval_failures(eval_result: dict) -> None:
-    """Exibe critérios que falharam."""
-    failed = [r for r in eval_result.get("dod_results", []) + eval_result.get("global_results", []) if not r.get("passed")]
-    for f in failed:
-        note = f" — {f['note']}" if f.get("note") else ""
-        console.print(f"    [red]✗[/red] {f['criterion']}{note}")
+def _print_eval_results(eval_result: dict, only_failed: bool = False) -> None:
+    """Exibe painel de resultados da avaliação."""
+    all_results = eval_result.get("dod_results", []) + eval_result.get("global_results", [])
+    items = [r for r in all_results if not r.get("passed")] if only_failed else all_results
+
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column(width=2)
+    table.add_column()
+    table.add_column(style="dim")
+
+    for r in items:
+        icon = "[green]✓[/green]" if r.get("passed") else "[red]✗[/red]"
+        note = r.get("note") or ""
+        table.add_row(icon, r["criterion"], note)
+
+    verdict = eval_result.get("verdict", "")
+    color = "green" if verdict == "approved" else "red"
+    title = "avaliação — aprovado" if verdict == "approved" else "avaliação — reprovado"
+    console.print(Panel(table, title=f"[{color}]{title}[/{color}]", border_style=color, padding=(0, 1)))
+
+
+def state_log(ctx: Context) -> Transition:
+    """Consolida artefatos da run em run-log.md."""
+    console.print("[cyan]▸ log[/cyan]")
+
+    spec = ctx.spec
+    eval_result = ctx.eval_result
+    retries = ctx.retries.get("implementation", 0)
+    verdict = eval_result.get("verdict", "unknown")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    dod_lines = "\n".join(
+        f"- {'✓' if r.get('passed') else '✗'} {r['criterion']}" + (f" — {r['note']}" if r.get("note") else "")
+        for r in eval_result.get("dod_results", [])
+    )
+    global_lines = "\n".join(
+        f"- {'✓' if r.get('passed') else '✗'} {r['criterion']}" + (f" — {r['note']}" if r.get("note") else "")
+        for r in eval_result.get("global_results", [])
+    )
+
+    log = f"""# Run Log — {spec.get('title', 'task')}
+
+**Data:** {now}
+**Veredicto:** {verdict}
+**Tentativas de implementação:** {retries + 1}
+**Artefatos:** {ctx.run_dir}
+
+---
+
+## Task
+
+{ctx.task_text}
+
+## Spec
+
+**Resumo:** {spec.get('summary', '')}
+
+**DoD:**
+{chr(10).join(f'- {d}' for d in spec.get('dod', []))}
+
+**Fora do escopo:**
+{chr(10).join(f'- {o}' for o in spec.get('out_of_scope', []))}
+
+---
+
+## Avaliação
+
+### DoD
+{dod_lines}
+
+### Critérios Globais
+{global_lines}
+"""
+
+    if eval_result.get("rejection_reason"):
+        log += f"\n### Motivo de rejeição (última tentativa)\n{eval_result['rejection_reason']}\n"
+
+    log_file = ctx.run_dir / "run-log.md"
+    log_file.write_text(log)
+    console.print(f"[green]✓[/green] log salvo em [dim]{log_file}[/dim]")
+
+    return Transition(next_state="done")
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +468,7 @@ STATES: dict[str, StateFn] = {
     "implementation": state_implementation,
     "evaluation": state_evaluation,
     "human_gate_eval": state_human_gate_eval,
+    "log": state_log,
 }
 
 
