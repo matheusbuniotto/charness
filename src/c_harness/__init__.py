@@ -8,13 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from rich.columns import Columns
 from rich.console import Console
 from rich.panel import Panel
-from rich.rule import Rule
-from rich.spinner import Spinner
 from rich.table import Table
-from rich.text import Text
 
 console = Console()
 
@@ -29,6 +25,20 @@ SPEC_PROMPT = """Você é um agente de estruturação de specs técnicas.
 
 Receberá um texto livre descrevendo uma task de desenvolvimento.
 Transforme em uma spec estruturada.
+
+Retorne SOMENTE um JSON válido com esta estrutura (sem markdown, sem explicações):
+{
+  "title": "título curto da task",
+  "summary": "o que precisa ser feito em 2-3 frases",
+  "dod": ["critério 1", "critério 2", "critério 3"],
+  "out_of_scope": ["o que NÃO deve ser feito"],
+  "notes": "contexto adicional relevante (ou null)"
+}"""
+
+SPEC_EDIT_PROMPT = """Você é um agente de estruturação de specs técnicas.
+
+Receberá uma spec existente em JSON e instruções de edição do usuário.
+Revise a spec conforme as instruções e retorne a versão atualizada.
 
 Retorne SOMENTE um JSON válido com esta estrutura (sem markdown, sem explicações):
 {
@@ -87,6 +97,15 @@ Retorne SOMENTE um JSON válido (sem markdown):
 # ---------------------------------------------------------------------------
 
 @dataclass
+class GitContext:
+    """Informações git do projeto."""
+    branch: str
+    log: str
+    is_clean: bool
+    dirty_summary: str  # resumo do que está sujo (se houver)
+
+
+@dataclass
 class Context:
     """Estado compartilhado entre estados da run."""
     task_text: str
@@ -94,7 +113,8 @@ class Context:
     project_dir: Path
     spec: dict = field(default_factory=dict)
     eval_result: dict = field(default_factory=dict)
-    retries: dict = field(default_factory=dict)  # estado -> contagem de retries
+    retries: dict = field(default_factory=dict)
+    git: GitContext | None = None
 
 
 @dataclass
@@ -189,13 +209,6 @@ def run_claude(
         process.stdin.close()
 
     result_text = ""
-    current_msg = ["iniciando..."]
-
-    def render() -> Columns:
-        return Columns([
-            Spinner("dots", style="cyan"),
-            Text(f"  {label}  {current_msg[0]}", style="dim"),
-        ])
 
     with console.status("", spinner="dots") as status:
         status.update(f"[dim]  {label}  iniciando...[/dim]")
@@ -236,8 +249,78 @@ def run_claude(
 
 
 # ---------------------------------------------------------------------------
+# Git helpers
+# ---------------------------------------------------------------------------
+
+def _run_git(args: list[str], cwd: Path) -> str:
+    """Executa comando git e retorna stdout."""
+    result = subprocess.run(
+        ["git"] + args,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+    )
+    return result.stdout.strip()
+
+
+def collect_git_context(project_dir: Path) -> GitContext | None:
+    """Coleta contexto git do projeto. Retorna None se não for repositório git."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        cwd=project_dir,
+    )
+    if result.returncode != 0:
+        return None
+
+    branch = _run_git(["branch", "--show-current"], project_dir) or "detached"
+    log = _run_git(["log", "--oneline", "-10"], project_dir)
+    status = _run_git(["status", "--porcelain"], project_dir)
+    is_clean = not bool(status)
+    dirty_summary = status if status else ""
+
+    return GitContext(
+        branch=branch,
+        log=log,
+        is_clean=is_clean,
+        dirty_summary=dirty_summary,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Estados
 # ---------------------------------------------------------------------------
+
+def state_git_check(ctx: Context) -> Transition:
+    """Valida estado do git antes de iniciar a run."""
+    console.print("[cyan]▸ git-check[/cyan]")
+
+    git = collect_git_context(ctx.project_dir)
+
+    if git is None:
+        console.print("[dim]  não é repositório git — pulando verificação[/dim]")
+        return Transition(next_state="spec_generation")
+
+    ctx.git = git
+    console.print(f"[dim]  branch: {git.branch}[/dim]")
+
+    if git.is_clean:
+        console.print("[green]✓[/green] working tree limpa")
+        return Transition(next_state="spec_generation")
+
+    # tem mudanças — bloqueia com sugestão
+    console.print("[red]✗[/red] working tree com mudanças não commitadas:\n")
+    for line in git.dirty_summary.splitlines()[:10]:
+        console.print(f"  [dim]{line}[/dim]")
+
+    console.print(
+        "\n[yellow]sugestão:[/yellow] commit ou stash antes de iniciar uma run.\n"
+        "  [dim]git add -p && git commit -m 'wip'[/dim]   — commita o que está pronto\n"
+        "  [dim]git stash[/dim]                            — guarda temporariamente"
+    )
+    sys.exit(1)
+
 
 def state_spec_generation(ctx: Context) -> Transition:
     """Texto livre → spec estruturada."""
@@ -264,17 +347,61 @@ def state_spec_generation(ctx: Context) -> Transition:
     return Transition(next_state="human_gate_spec")
 
 
+def state_spec_edit(ctx: Context) -> Transition:
+    """Edita a spec existente com base no feedback do usuário."""
+    console.print("[cyan]▸ spec-edit[/cyan]")
+
+    current_spec_json = json.dumps(ctx.spec, indent=2, ensure_ascii=False)
+    feedback = ctx.spec_edit_feedback  # type: ignore[attr-defined]
+
+    prompt = f"Spec atual:\n{current_spec_json}\n\nInstruções de edição:\n{feedback}"
+
+    raw = run_claude(
+        prompt=prompt,
+        system_prompt=SPEC_EDIT_PROMPT,
+        cwd=ctx.run_dir,
+        label="spec-edit",
+        allowed_tools=None,
+    )
+
+    try:
+        ctx.spec = json.loads(_extract_json(raw))
+    except json.JSONDecodeError:
+        console.print(f"[red][erro] JSON inválido da spec editada:[/red]\n{raw}")
+        sys.exit(1)
+
+    spec_file = ctx.run_dir / "spec.json"
+    spec_file.write_text(json.dumps(ctx.spec, indent=2, ensure_ascii=False))
+    console.print("[green]✓[/green] spec atualizada")
+
+    return Transition(next_state="human_gate_spec")
+
+
 def state_human_gate_spec(ctx: Context) -> Transition:
-    """Human gate: confirmar spec antes de implementar."""
+    """Human gate: confirmar spec antes de implementar, com opção de edição."""
     spec = ctx.spec
     console.print(f"\n  [bold]{spec['title']}[/bold]")
     console.print(f"  [dim]{spec['summary']}[/dim]")
     console.print(f"  DoD: {len(spec['dod'])} critérios\n")
     for i, criterion in enumerate(spec['dod'], 1):
         console.print(f"    [dim]{i}.[/dim] {criterion}")
+    if spec.get("out_of_scope"):
+        console.print(f"\n  Fora do escopo: {len(spec['out_of_scope'])} itens")
+    if spec.get("notes"):
+        console.print(f"  [dim]Notas: {spec['notes']}[/dim]")
 
     console.print()
-    resposta = console.input("[yellow]aprovar spec e iniciar implementação?[/yellow] [dim][s/N][/dim] ").strip().lower()
+    resposta = console.input(
+        "[yellow]aprovar spec?[/yellow] [dim][s=aprovar / e=editar / N=cancelar][/dim] "
+    ).strip().lower()
+
+    if resposta in ("e", "editar", "edit"):
+        feedback = console.input("[yellow]descreva as alterações desejadas:[/yellow] ").strip()
+        if not feedback:
+            console.print("[dim]nenhuma alteração informada — mantendo spec atual.[/dim]")
+            return Transition(next_state="human_gate_spec")
+        ctx.spec_edit_feedback = feedback  # type: ignore[attr-defined]
+        return Transition(next_state="spec_edit")
 
     if resposta not in ("s", "sim", "y", "yes"):
         console.print("[dim]run pausada pelo usuário.[/dim]")
@@ -300,8 +427,17 @@ Critérios que falharam:
 {chr(10).join(f'- {c}' for c in ctx.eval_result.get('failed_criteria', []))}
 """
 
+    git_context = ""
+    if ctx.git:
+        git_context = f"""
+Contexto git do projeto:
+- Branch: {ctx.git.branch}
+- Histórico recente:
+{ctx.git.log}
+"""
+
     run_claude(
-        prompt=f"Implemente a task descrita em spec.json.{rejection_context}",
+        prompt=f"Implemente a task descrita em spec.json.{rejection_context}{git_context}",
         system_prompt=IMPL_PROMPT.format(spec_path=spec_path),
         cwd=ctx.project_dir,
         label="impl",
@@ -309,6 +445,53 @@ Critérios que falharam:
     )
 
     console.print("[green]✓[/green] implementação concluída")
+    return Transition(next_state="human_gate_commit")
+
+
+def state_human_gate_commit(ctx: Context) -> Transition:
+    """Human gate: revisar diff e decidir se commita antes da avaliação."""
+    if ctx.git is None:
+        return Transition(next_state="evaluation")
+
+    diff = _run_git(["diff", "--stat", "HEAD"], ctx.project_dir)
+    new_files = _run_git(["ls-files", "--others", "--exclude-standard"], ctx.project_dir)
+
+    if not diff and not new_files:
+        console.print("[dim]  nenhuma mudança detectada no git — pulando gate de commit[/dim]")
+        return Transition(next_state="evaluation")
+
+    console.print("\n[cyan]▸ human-gate: commit[/cyan]")
+    if diff:
+        console.print(f"\n[dim]{diff}[/dim]")
+    if new_files:
+        console.print("\n[dim]novos arquivos:[/dim]")
+        for f in new_files.splitlines():
+            console.print(f"  [dim]+ {f}[/dim]")
+
+    resposta = console.input("\n[yellow]commitar implementação antes de avaliar?[/yellow] [dim][s/N][/dim] ").strip().lower()
+
+    if resposta not in ("s", "sim", "y", "yes"):
+        return Transition(next_state="evaluation", reason="commit pulado pelo usuário")
+
+    # gera mensagem de commit baseada na spec
+    title = ctx.spec.get("title", "implementação via c-harness")
+    commit_msg = f"feat: {title}\n\ngerado por c-harness · run {ctx.run_dir.name}"
+
+    _run_git(["add", "-A"], ctx.project_dir)
+    result = subprocess.run(
+        ["git", "commit", "-m", commit_msg],
+        capture_output=True,
+        text=True,
+        cwd=ctx.project_dir,
+    )
+
+    if result.returncode == 0:
+        console.print("[green]✓[/green] commit criado")
+        hash_short = _run_git(["rev-parse", "--short", "HEAD"], ctx.project_dir)
+        console.print(f"  [dim]{hash_short} {title}[/dim]")
+    else:
+        console.print(f"[red]✗[/red] commit falhou:\n{result.stderr}")
+
     return Transition(next_state="evaluation")
 
 
@@ -463,18 +646,21 @@ def state_log(ctx: Context) -> Transition:
 # ---------------------------------------------------------------------------
 
 STATES: dict[str, StateFn] = {
+    "git_check": state_git_check,
     "spec_generation": state_spec_generation,
+    "spec_edit": state_spec_edit,
     "human_gate_spec": state_human_gate_spec,
     "implementation": state_implementation,
+    "human_gate_commit": state_human_gate_commit,
     "evaluation": state_evaluation,
     "human_gate_eval": state_human_gate_eval,
     "log": state_log,
 }
 
 
-def run_pipeline(ctx: Context) -> None:
+def run_pipeline(ctx: Context, start_state: str = "git_check") -> None:
     """Executa a state machine até o estado 'done'."""
-    current = "spec_generation"
+    current = start_state
 
     while current != "done":
         if current not in STATES:
@@ -494,23 +680,56 @@ def run_pipeline(ctx: Context) -> None:
 
 def main() -> None:
     """Entrypoint do c-harness."""
-    if len(sys.argv) < 2:
+    args = sys.argv[1:]
+
+    if not args:
         console.print("[yellow]uso:[/yellow] c-harness '<descrição da task>'")
+        console.print("       c-harness --edit <caminho/para/spec.json>")
         sys.exit(1)
 
-    task_text = " ".join(sys.argv[1:])
     project_dir = Path.cwd()
     run_dir = project_dir / ".harness" / "runs" / datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=True)
 
     console.print(f"\n[bold]c-harness[/bold] [dim]→ {run_dir.relative_to(project_dir)}[/dim]\n")
 
-    ctx = Context(
-        task_text=task_text,
-        run_dir=run_dir,
-        project_dir=project_dir,
-    )
+    # Modo de edição de spec existente: --edit <spec-path>
+    if args[0] == "--edit":
+        if len(args) < 2:
+            console.print("[red][erro][/red] --edit requer o caminho para um spec.json")
+            sys.exit(1)
 
-    run_pipeline(ctx)
+        spec_path = Path(args[1])
+        if not spec_path.exists():
+            console.print(f"[red][erro][/red] spec não encontrada: {spec_path}")
+            sys.exit(1)
+
+        try:
+            spec_data = json.loads(spec_path.read_text())
+        except json.JSONDecodeError as exc:
+            console.print(f"[red][erro][/red] JSON inválido em {spec_path}: {exc}")
+            sys.exit(1)
+
+        # Copia a spec original para o run_dir como ponto de partida
+        (run_dir / "spec.json").write_text(json.dumps(spec_data, indent=2, ensure_ascii=False))
+
+        ctx = Context(
+            task_text=spec_data.get("summary", ""),
+            run_dir=run_dir,
+            project_dir=project_dir,
+            spec=spec_data,
+        )
+
+        run_pipeline(ctx, start_state="human_gate_spec")
+    else:
+        task_text = " ".join(args)
+
+        ctx = Context(
+            task_text=task_text,
+            run_dir=run_dir,
+            project_dir=project_dir,
+        )
+
+        run_pipeline(ctx)
 
     console.print(f"\n[bold green]✓ run concluída[/bold green] [dim]→ {run_dir.relative_to(project_dir)}[/dim]\n")
