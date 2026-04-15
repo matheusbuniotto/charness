@@ -226,12 +226,72 @@ def _parse_args(args: list[str]) -> tuple[dict[str, str], list[str]]:
     return flags, positional
 
 
+
+def _run_setup() -> None:
+    """Configura o c-harness no projeto atual."""
+    config_file = Path("config.yml")
+    skills_dir = Path("skills")
+    
+    console.print("\n[bold cyan]c-harness setup[/bold cyan]\n")
+    
+    if config_file.exists():
+        console.print(f"[yellow]⚠ {config_file} já existe. Pulando criação.[/yellow]")
+    else:
+        config_content = """# Configuração do c-harness
+harness:
+  # Diretório onde ficam as skills específicas para as runs
+  skills_dir: "skills"
+  
+  # Skills globais a carregar de ~/.claude/skills ou .claude/skills do projeto.
+  # Se vazio/ausente, carregará TODAS as skills globais encontradas (pode inflar muito o contexto).
+  # global_skills:
+  #   - "grug"
+  #   - "harness"
+  
+  # Rastreio de uso de tokens e contexto
+  metrics:
+    save_tokens: true
+    log_file: "metrics.json"
+
+agents:
+  claude:
+    model: "claude-3-5-sonnet-latest"
+  pi:
+    model: "default"
+"""
+        config_file.write_text(config_content)
+        console.print(f"[green]✓[/green] criado {config_file}")
+        
+    if not skills_dir.exists():
+        skills_dir.mkdir(parents=True)
+        console.print(f"[green]✓[/green] criado diretório {skills_dir}/")
+        
+        # templates
+        eval_dir = skills_dir / "evaluation"
+        eval_dir.mkdir()
+        (eval_dir / "strict-checks.md").write_text("# Avaliação Estrita\n- Verifique nomenclatura clara.\n- Aponte falhas se a complexidade for alta e não houver testes.\n")
+        
+        (skills_dir / "implementation.md").write_text("# Regras de Implementação\n- Escreva código limpo e siga o style guide do projeto.\n")
+        
+        console.print(f"  [dim]↳ adicionados templates de skills em {skills_dir}/[/dim]")
+    else:
+        console.print(f"[yellow]⚠ {skills_dir}/ já existe. Pulando criação de templates.[/yellow]")
+        
+    console.print("\n[bold green]Setup concluído![/bold green] Você já pode usar o c-harness neste projeto.\n")
+
 def main() -> None:
+
     """Entrypoint do c-harness."""
     raw_args = sys.argv[1:]
     flags, args = _parse_args(raw_args)
 
+
+    if args and args[0] == "setup":
+        _run_setup()
+        sys.exit(0)
+
     # Configura agente backend
+
     agent = flags.get("agent", "claude")
     if agent not in ("claude", "cursor", "pi"):
         console.print(f"[red][erro][/red] agente desconhecido: '{agent}'")
@@ -241,6 +301,9 @@ def main() -> None:
 
     if not args:
         console.print("[yellow]uso:[/yellow] c-harness '<descrição da task>'")
+        console.print(
+            "       c-harness setup                        [dim]# configura o projeto atual[/dim]"
+        )
         console.print(
             "       c-harness <caminho/para/spec.json>     [dim]# spec local[/dim]"
         )
