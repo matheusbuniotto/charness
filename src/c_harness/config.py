@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Config:
-    skills_dir: Path = Path("skills")
+    skills_dir: Path = Path(".harness/skills")
     save_tokens: bool = True
     metrics_file: str = "metrics.json"
     global_skills: list[str] = field(default_factory=list)
@@ -28,7 +28,7 @@ class Config:
         )
 
 # Instância global carregada em tempo de inicialização
-config = Config.load(Path("config.yml"))
+config = Config.load(Path(".harness/config.yml"))
 
 def _load_claude_skills(base_dir: Path, allowed_skills: list[str]) -> list[str]:
     """Carrega skills da pasta .claude/skills (project ou geral)."""

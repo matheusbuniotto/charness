@@ -229,8 +229,10 @@ def _parse_args(args: list[str]) -> tuple[dict[str, str], list[str]]:
 
 def _run_setup() -> None:
     """Configura o c-harness no projeto atual."""
-    config_file = Path("config.yml")
-    skills_dir = Path("skills")
+    harness_dir = Path(".harness")
+    harness_dir.mkdir(exist_ok=True)
+    config_file = harness_dir / "config.yml"
+    skills_dir = harness_dir / "skills"
     
     console.print("\n[bold cyan]c-harness setup[/bold cyan]\n")
     
@@ -240,7 +242,8 @@ def _run_setup() -> None:
         config_content = """# Configuração do c-harness
 harness:
   # Diretório onde ficam as skills específicas para as runs
-  skills_dir: "skills"
+  skills_dir: ".harness/skills"
+
   
   # Skills globais a carregar de ~/.claude/skills ou .claude/skills do projeto.
   # Se vazio/ausente, carregará TODAS as skills globais encontradas (pode inflar muito o contexto).

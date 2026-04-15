@@ -10,7 +10,7 @@ wheels/
 .venv
 
 # Harness runs (artefatos gerados)
-.harness/
+.harness/runs/
 
 # Plugin cache
 .pi-lens/
