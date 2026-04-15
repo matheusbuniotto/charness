@@ -308,7 +308,7 @@ Contexto git do projeto:
 def state_human_gate_commit(ctx: Context) -> Transition:
     """Human gate: revisar diff e decidir se commita antes da avaliação."""
     if ctx.git is None:
-        return Transition(next_state="evaluation")
+        return Transition(next_state="automated_checks")
 
     diff = _run_git(["diff", "--stat", "HEAD"], ctx.project_dir)
     new_files = _run_git(
@@ -319,7 +319,7 @@ def state_human_gate_commit(ctx: Context) -> Transition:
         console.print(
             "[dim]  nenhuma mudança detectada no git — pulando gate de commit[/dim]"
         )
-        return Transition(next_state="evaluation")
+        return Transition(next_state="automated_checks")
 
     console.print("\n[cyan]▸ human-gate: commit[/cyan]")
     if diff:
@@ -338,7 +338,7 @@ def state_human_gate_commit(ctx: Context) -> Transition:
     )
 
     if resposta not in ("s", "sim", "y", "yes"):
-        return Transition(next_state="evaluation", reason="commit pulado pelo usuário")
+        return Transition(next_state="automated_checks", reason="commit pulado pelo usuário")
 
     # gera mensagem de commit baseada na spec
     title = ctx.spec.get("title", "implementação via c-harness")
@@ -359,8 +359,49 @@ def state_human_gate_commit(ctx: Context) -> Transition:
     else:
         console.print(f"[red]✗[/red] commit falhou:\n{result.stderr}")
 
-    return Transition(next_state="evaluation")
+    return Transition(next_state="automated_checks")
 
+
+
+def state_automated_checks(ctx: Context) -> Transition:
+    """Executa comandos de check configurados antes da avaliação LLM."""
+    if not config.checks_commands:
+        return Transition(next_state="evaluation")
+        
+    console.print("\n[cyan]▸ automated-checks[/cyan]")
+    
+    for cmd in config.checks_commands:
+        console.print(f"  [dim]executando:[/dim] {cmd}")
+        
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=ctx.project_dir
+        )
+        
+        if result.returncode != 0:
+            console.print(f"  [red]✗ falhou:[/red] {cmd}")
+            # Voltar para implementação com erro
+            retries = ctx.retries.get("implementation", 0)
+            if retries >= MAX_RETRIES:
+                console.print(f"[red]✗[/red] checks falharam após {MAX_RETRIES + 1} tentativas — escalando para humano")
+                ctx.eval_result = {
+                    "rejection_reason": f"O check automatizado '{cmd}' falhou criticamente:\n{result.stderr or result.stdout}"
+                }
+                return Transition(next_state="human_gate_eval", reason="max retries atingido nos checks")
+
+            ctx.retries["implementation"] = retries + 1
+            ctx.eval_result = {
+                "rejection_reason": f"O comando de validação '{cmd}' falhou. Corrija o código para passar no check.\n\nOutput do erro:\n{result.stderr or result.stdout}",
+                "failed_criteria": [f"Check automatizado: {cmd}"]
+            }
+            return Transition(next_state="implementation", reason=f"check falhou: {cmd}")
+            
+        console.print(f"  [green]✓ passou:[/green] {cmd}")
+
+    return Transition(next_state="evaluation")
 
 def state_evaluation(ctx: Context) -> Transition:
     """Avalia implementação contra DoD + critérios globais."""
@@ -588,6 +629,7 @@ STATES: dict[str, StateFn] = {
     "human_gate_spec": state_human_gate_spec,
     "implementation": state_implementation,
     "human_gate_commit": state_human_gate_commit,
+    "automated_checks": state_automated_checks,
     "evaluation": state_evaluation,
     "human_gate_eval": state_human_gate_eval,
     "log": state_log,

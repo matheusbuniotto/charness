@@ -9,6 +9,7 @@ class Config:
     metrics_file: str = "metrics.json"
     global_skills: list[str] = field(default_factory=list)
     rules_dir: Path = Path(".harness/rules")
+    checks_commands: list[str] = field(default_factory=list)
     global_checks: list[str] = field(default_factory=lambda: [
         "Sem TODOs ou placeholders no código",
         "Funções com responsabilidade única e clara",
@@ -27,6 +28,7 @@ class Config:
         harness = data.get("harness", {})
         metrics = harness.get("metrics", {})
         evaluation = harness.get("evaluation", {})
+        checks = harness.get("checks", {})
         
         return cls(
             skills_dir=Path(harness.get("skills_dir", ".harness/skills")),
@@ -34,6 +36,7 @@ class Config:
             metrics_file=metrics.get("log_file", "metrics.json"),
             global_skills=harness.get("global_skills", []),
             rules_dir=Path(harness.get("rules_dir", ".harness/rules")),
+            checks_commands=checks.get("commands", []),
             global_checks=evaluation.get("global_checks", [
                 "Sem TODOs ou placeholders no código",
                 "Funções com responsabilidade única e clara",

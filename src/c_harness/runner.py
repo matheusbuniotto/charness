@@ -253,6 +253,13 @@ harness:
   #   - "grug"
   #   - "harness"
   
+  # Comandos automatizados executados antes da avaliação LLM
+  # Se algum falhar, o pipeline volta imediatamente para a implementação
+  checks:
+    commands:
+      # - "uv run ruff check ."
+      # - "uv run pytest"
+      
   # Critérios de avaliação globais (aplicados pelo agente de evaluation)
   evaluation:
     global_checks:
