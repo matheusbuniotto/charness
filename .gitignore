@@ -14,3 +14,7 @@ wheels/
 
 # Plugin cache
 .pi-lens/
+
+# Artefatos de teste/run largados na raiz
+task-refactor-agents.json
+impl-summary.md
