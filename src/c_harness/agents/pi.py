@@ -51,16 +51,18 @@ class PiAgent:
             try:
                 result = subprocess.run(
                     cmd,
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL,  # EOF imediato → pi encerra após responder
                     text=True,
                     cwd=cwd,
-                    timeout=60,  # timeout de 60s para testar
+                    timeout=300,
                 )
             except subprocess.TimeoutExpired:
                 console.print("[red][erro] pi travado (timeout)[/red]")
                 console.print("[dim]possíveis causas:[/dim]")
                 console.print("  • pi esperando confirmação de permissão")
-                console.print("  • pi em modo interativo")
+                console.print("  • tarefa muito longa — considere aumentar o timeout")
                 sys.exit(1)
 
         if result.returncode != 0:
