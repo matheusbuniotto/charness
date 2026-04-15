@@ -2,20 +2,23 @@
 
 import json
 import re
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from rich.console import Console
 
+from .agents import Agent, create_agent
 from .git import GitContext
 
 console = Console()
 
 MAX_RETRIES = 2  # padrão "dois strikes" — falhou duas vezes, escala pro humano
+
+# Configuração global do agente (setado no main)
+_agent_instance: Agent | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +51,7 @@ StateFn = Callable[[Context], Transition]
 
 
 # ---------------------------------------------------------------------------
-# Runner de subprocess
+# Funções utilitárias
 # ---------------------------------------------------------------------------
 
 
@@ -74,103 +77,54 @@ def _extract_json(text: str) -> str:
     return text
 
 
-def _format_tool_event(tool_name: str, tool_input: dict) -> str:
-    """Formata evento de tool use para exibição."""
-    if tool_name == "Read":
-        return f"lendo {Path(tool_input.get('file_path', '')).name}"
-    if tool_name in ("Write", "Edit"):
-        return f"{'escrevendo' if tool_name == 'Write' else 'editando'} {Path(tool_input.get('file_path', '')).name}"
-    if tool_name == "Bash":
-        cmd = tool_input.get("command", "")
-        return f"bash: {cmd[:50]}{'...' if len(cmd) > 50 else ''}"
-    if tool_name == "Glob":
-        return f"glob: {tool_input.get('pattern', '')}"
-    if tool_name == "Grep":
-        return f"grep: {tool_input.get('pattern', '')}"
-    return tool_name.lower()
+# ---------------------------------------------------------------------------
+# Interface pública de execução de agentes
+# ---------------------------------------------------------------------------
 
 
-def run_claude(
+def run_agent(
     prompt: str,
     system_prompt: str,
     cwd: Path,
     label: str = "",
     allowed_tools: list[str] | None = None,
 ) -> str:
-    """Executa claude CLI como subprocess com feedback visual em tempo real."""
-    cmd = [
-        "claude",
-        "--print",
-        "--output-format",
-        "stream-json",
-        "--permission-mode",
-        "auto",
-        "--no-session-persistence",
-        "--system-prompt",
-        system_prompt,
-    ]
+    """Executa o agente configurado (claude ou pi).
 
-    if allowed_tools:
-        cmd += ["--allowedTools", ",".join(allowed_tools)]
-        # com --allowedTools, prompt via stdin (argumento posicional some)
-        stdin_input = prompt
-    else:
-        cmd.append(prompt)
-        stdin_input = None
+    Usa a instância global do agente configurada via configure_agent().
 
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.PIPE if stdin_input else None,
-        text=True,
-        cwd=cwd,
-    )
+    Raises:
+        RuntimeError: Se o agente não foi configurado antes da chamada.
+    """
+    if _agent_instance is None:
+        raise RuntimeError("agente não configurado — chame configure_agent() primeiro")
+    return _agent_instance.run(prompt, system_prompt, cwd, label, allowed_tools)
 
-    if stdin_input:
-        process.stdin.write(stdin_input)
-        process.stdin.close()
 
-    result_text = ""
+def configure_agent(backend: Literal["claude", "cursor", "pi"]) -> None:
+    """Configura o agente global a ser usado pelas chamadas run_agent().
 
-    with console.status("", spinner="dots") as status:
-        status.update(f"[dim]  {label}  iniciando...[/dim]")
+    Deve ser chamado uma vez no início do programa antes de usar run_agent().
 
-        for line in process.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+    Args:
+        backend: Nome do backend de agente ("claude" ou "pi").
+    """
+    global _agent_instance
+    _agent_instance = create_agent(backend)
 
-            event_type = obj.get("type")
 
-            if event_type == "assistant":
-                for block in obj.get("message", {}).get("content", []):
-                    if block.get("type") == "text":
-                        text = block.get("text", "").strip()
-                        if text:
-                            short = text[:70] + "..." if len(text) > 70 else text
-                            status.update(f"[dim]  {label}  {short}[/dim]")
-                    elif block.get("type") == "tool_use":
-                        msg = _format_tool_event(
-                            block.get("name", ""), block.get("input", {})
-                        )
-                        status.update(f"[dim]  {label}  {msg}[/dim]")
+def get_agent_backend() -> str:
+    """Retorna o nome do backend do agente atualmente configurado.
 
-            elif event_type == "result":
-                result_text = obj.get("result", "")
+    Returns:
+        Nome do backend ("claude" ou "pi").
 
-    process.wait()
-
-    if process.returncode != 0:
-        err = process.stderr.read()
-        console.print(f"[red][erro] claude falhou:[/red]\n{err}")
-        sys.exit(1)
-
-    return result_text
+    Raises:
+        RuntimeError: Se o agente não foi configurado.
+    """
+    if _agent_instance is None:
+        raise RuntimeError("agente não configurado")
+    return _agent_instance.name
 
 
 # ---------------------------------------------------------------------------
@@ -236,15 +190,59 @@ def _detect_input_mode(args: list[str]) -> tuple[str, str | None]:
 # ---------------------------------------------------------------------------
 
 
+def _parse_args(args: list[str]) -> tuple[dict[str, str], list[str]]:
+    """Parse simples de flags --key value ou --key=value.
+
+    Retorna (flags_dict, positional_args).
+    """
+    flags: dict[str, str] = {}
+    positional: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg.startswith("--"):
+            key = arg[2:]
+            if "=" in key:
+                key, value = key.split("=", 1)
+                flags[key] = value
+            elif i + 1 < len(args) and not args[i + 1].startswith("--"):
+                flags[key] = args[i + 1]
+                i += 1
+            else:
+                flags[key] = "true"
+        else:
+            positional.append(arg)
+        i += 1
+    return flags, positional
+
+
 def main() -> None:
     """Entrypoint do c-harness."""
-    args = sys.argv[1:]
+    raw_args = sys.argv[1:]
+    flags, args = _parse_args(raw_args)
+
+    # Configura agente backend
+    agent = flags.get("agent", "claude")
+    if agent not in ("claude", "cursor", "pi"):
+        console.print(f"[red][erro][/red] agente desconhecido: '{agent}'")
+        console.print("  use: --agent claude  |  --agent cursor  |  --agent pi")
+        sys.exit(1)
+    configure_agent(agent)
 
     if not args:
         console.print("[yellow]uso:[/yellow] c-harness '<descrição da task>'")
-        console.print("       c-harness <caminho/para/spec.json>     [dim]# spec local[/dim]")
-        console.print("       c-harness <caminho/para/resume.json>   [dim]# retomada[/dim]")
+        console.print(
+            "       c-harness <caminho/para/spec.json>     [dim]# spec local[/dim]"
+        )
+        console.print(
+            "       c-harness <caminho/para/resume.json>   [dim]# retomada[/dim]"
+        )
         console.print("       c-harness --edit <caminho/para/spec.json>")
+        console.print("")
+        console.print("[dim]flags:[/dim]")
+        console.print(
+            "       --agent claude|pi    [dim]# seleciona o agente (padrão: claude)[/dim]"
+        )
         sys.exit(1)
 
     project_dir = Path.cwd()
@@ -253,9 +251,9 @@ def main() -> None:
     )
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    console.print(
-        f"\n[bold]c-harness[/bold] [dim]→ {run_dir.relative_to(project_dir)}[/dim]\n"
-    )
+    console.print(f"\n[bold]c-harness[/bold] ({get_agent_backend()}) → ", end="")
+    console.print(str(run_dir.relative_to(project_dir)), style="dim")
+    console.print()
 
     # Modo de edição de spec existente: --edit <spec-path>
     if args[0] == "--edit":
@@ -311,11 +309,19 @@ def main() -> None:
                 # Valida campos mínimos do resume
                 resume_errors = []
                 if not resume_spec:
-                    resume_errors.append("campo 'spec' ausente ou vazio em 'resume_from'")
+                    resume_errors.append(
+                        "campo 'spec' ausente ou vazio em 'resume_from'"
+                    )
                 if resume_state not in (
-                    "git_check", "spec_generation", "spec_edit", "human_gate_spec",
-                    "implementation", "human_gate_commit", "evaluation",
-                    "human_gate_eval", "log",
+                    "git_check",
+                    "spec_generation",
+                    "spec_edit",
+                    "human_gate_spec",
+                    "implementation",
+                    "human_gate_commit",
+                    "evaluation",
+                    "human_gate_eval",
+                    "log",
                 ):
                     resume_errors.append(
                         f"campo 'state' inválido em 'resume_from': '{resume_state}'"
@@ -357,9 +363,7 @@ def main() -> None:
                         console.print(f"  [red]•[/red] {err}")
                     sys.exit(1)
 
-                console.print(
-                    f"[bold]modo:[/bold] spec local → [dim]{json_file}[/dim]"
-                )
+                console.print(f"[bold]modo:[/bold] spec local → [dim]{json_file}[/dim]")
 
                 # Salva cópia da spec na run_dir (sem re-estruturar)
                 (run_dir / "spec.json").write_text(

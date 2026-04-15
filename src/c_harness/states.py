@@ -15,7 +15,7 @@ from .runner import (
     Transition,
     _extract_json,
     console,
-    run_claude,
+    run_agent,
 )
 
 # ---------------------------------------------------------------------------
@@ -132,7 +132,7 @@ def state_spec_generation(ctx: Context) -> Transition:
     """Texto livre → spec estruturada."""
     console.print("[cyan]▸ spec-generation[/cyan]")
 
-    raw = run_claude(
+    raw = run_agent(
         prompt=f"Task: {ctx.task_text}",
         system_prompt=SPEC_PROMPT,
         cwd=ctx.run_dir,
@@ -162,7 +162,7 @@ def state_spec_edit(ctx: Context) -> Transition:
 
     prompt = f"Spec atual:\n{current_spec_json}\n\nInstruções de edição:\n{feedback}"
 
-    raw = run_claude(
+    raw = run_agent(
         prompt=prompt,
         system_prompt=SPEC_EDIT_PROMPT,
         cwd=ctx.run_dir,
@@ -253,7 +253,7 @@ Contexto git do projeto:
 {ctx.git.log}
 """
 
-    run_claude(
+    run_agent(
         prompt=f"Implemente a task descrita em spec.json.{rejection_context}{git_context}",
         system_prompt=IMPL_PROMPT.format(spec_path=spec_path),
         cwd=ctx.project_dir,
@@ -334,7 +334,7 @@ def state_evaluation(ctx: Context) -> Transition:
             "[yellow]⚠ impl-summary.md não encontrado — avaliação com contexto limitado[/yellow]"
         )
 
-    raw = run_claude(
+    raw = run_agent(
         prompt="Avalie a implementação conforme as instruções.",
         system_prompt=EVAL_PROMPT.format(
             spec_path=spec_path,
