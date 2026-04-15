@@ -7,17 +7,16 @@ import sys
 from rich.panel import Panel
 from rich.table import Table
 
-from .git import collect_git_context, _run_git
+from .git import _run_git, collect_git_context
 from .runner import (
     MAX_RETRIES,
     Context,
-    Transition,
     StateFn,
+    Transition,
+    _extract_json,
     console,
     run_claude,
-    _extract_json,
 )
-
 
 # ---------------------------------------------------------------------------
 # Prompts por estado
@@ -97,6 +96,7 @@ Retorne SOMENTE um JSON válido (sem markdown):
 # ---------------------------------------------------------------------------
 # Estados
 # ---------------------------------------------------------------------------
+
 
 def state_git_check(ctx: Context) -> Transition:
     """Valida estado do git antes de iniciar a run."""
@@ -189,7 +189,7 @@ def state_human_gate_spec(ctx: Context) -> Transition:
     console.print(f"\n  [bold]{spec['title']}[/bold]")
     console.print(f"  [dim]{spec['summary']}[/dim]")
     console.print(f"  DoD: {len(spec['dod'])} critérios\n")
-    for i, criterion in enumerate(spec['dod'], 1):
+    for i, criterion in enumerate(spec["dod"], 1):
         console.print(f"    [dim]{i}.[/dim] {criterion}")
     if spec.get("out_of_scope"):
         console.print(f"\n  Fora do escopo: {len(spec['out_of_scope'])} itens")
@@ -197,14 +197,22 @@ def state_human_gate_spec(ctx: Context) -> Transition:
         console.print(f"  [dim]Notas: {spec['notes']}[/dim]")
 
     console.print()
-    resposta = console.input(
-        "[yellow]aprovar spec?[/yellow] [dim][s=aprovar / e=editar / N=cancelar][/dim] "
-    ).strip().lower()
+    resposta = (
+        console.input(
+            "[yellow]aprovar spec?[/yellow] [dim][s=aprovar / e=editar / N=cancelar][/dim] "
+        )
+        .strip()
+        .lower()
+    )
 
     if resposta in ("e", "editar", "edit"):
-        feedback = console.input("[yellow]descreva as alterações desejadas:[/yellow] ").strip()
+        feedback = console.input(
+            "[yellow]descreva as alterações desejadas:[/yellow] "
+        ).strip()
         if not feedback:
-            console.print("[dim]nenhuma alteração informada — mantendo spec atual.[/dim]")
+            console.print(
+                "[dim]nenhuma alteração informada — mantendo spec atual.[/dim]"
+            )
             return Transition(next_state="human_gate_spec")
         ctx.spec_edit_feedback = feedback  # type: ignore[attr-defined]
         return Transition(next_state="spec_edit")
@@ -219,7 +227,10 @@ def state_human_gate_spec(ctx: Context) -> Transition:
 def state_implementation(ctx: Context) -> Transition:
     """Spec → implementação no projeto."""
     retries = ctx.retries.get("implementation", 0)
-    console.print("[cyan]▸ implementation[/cyan]" + (f" [dim](tentativa {retries + 1})[/dim]" if retries > 0 else ""))
+    console.print(
+        "[cyan]▸ implementation[/cyan]"
+        + (f" [dim](tentativa {retries + 1})[/dim]" if retries > 0 else "")
+    )
 
     spec_path = ctx.run_dir / "spec.json"
     rejection_context = ""
@@ -227,10 +238,10 @@ def state_implementation(ctx: Context) -> Transition:
     if ctx.eval_result.get("rejection_reason"):
         rejection_context = f"""
 A implementação anterior foi reprovada. Corrija os seguintes problemas:
-{ctx.eval_result['rejection_reason']}
+{ctx.eval_result["rejection_reason"]}
 
 Critérios que falharam:
-{chr(10).join(f'- {c}' for c in ctx.eval_result.get('failed_criteria', []))}
+{chr(10).join(f"- {c}" for c in ctx.eval_result.get("failed_criteria", []))}
 """
 
     git_context = ""
@@ -260,10 +271,14 @@ def state_human_gate_commit(ctx: Context) -> Transition:
         return Transition(next_state="evaluation")
 
     diff = _run_git(["diff", "--stat", "HEAD"], ctx.project_dir)
-    new_files = _run_git(["ls-files", "--others", "--exclude-standard"], ctx.project_dir)
+    new_files = _run_git(
+        ["ls-files", "--others", "--exclude-standard"], ctx.project_dir
+    )
 
     if not diff and not new_files:
-        console.print("[dim]  nenhuma mudança detectada no git — pulando gate de commit[/dim]")
+        console.print(
+            "[dim]  nenhuma mudança detectada no git — pulando gate de commit[/dim]"
+        )
         return Transition(next_state="evaluation")
 
     console.print("\n[cyan]▸ human-gate: commit[/cyan]")
@@ -274,7 +289,13 @@ def state_human_gate_commit(ctx: Context) -> Transition:
         for f in new_files.splitlines():
             console.print(f"  [dim]+ {f}[/dim]")
 
-    resposta = console.input("\n[yellow]commitar implementação antes de avaliar?[/yellow] [dim][s/N][/dim] ").strip().lower()
+    resposta = (
+        console.input(
+            "\n[yellow]commitar implementação antes de avaliar?[/yellow] [dim][s/N][/dim] "
+        )
+        .strip()
+        .lower()
+    )
 
     if resposta not in ("s", "sim", "y", "yes"):
         return Transition(next_state="evaluation", reason="commit pulado pelo usuário")
@@ -309,7 +330,9 @@ def state_evaluation(ctx: Context) -> Transition:
     impl_summary_path = ctx.project_dir / "impl-summary.md"
 
     if not impl_summary_path.exists():
-        console.print("[yellow]⚠ impl-summary.md não encontrado — avaliação com contexto limitado[/yellow]")
+        console.print(
+            "[yellow]⚠ impl-summary.md não encontrado — avaliação com contexto limitado[/yellow]"
+        )
 
     raw = run_claude(
         prompt="Avalie a implementação conforme as instruções.",
@@ -341,22 +364,36 @@ def state_evaluation(ctx: Context) -> Transition:
     # reprovado — verificar retries
     retries = ctx.retries.get("implementation", 0)
     if retries >= MAX_RETRIES:
-        console.print(f"[red]✗[/red] avaliação reprovada após {MAX_RETRIES + 1} tentativas — escalando para humano")
+        console.print(
+            f"[red]✗[/red] avaliação reprovada após {MAX_RETRIES + 1} tentativas — escalando para humano"
+        )
         _print_eval_results(ctx.eval_result)
         return Transition(next_state="human_gate_eval", reason="max retries atingido")
 
-    console.print("[yellow]✗[/yellow] avaliação reprovada — voltando para implementação")
+    console.print(
+        "[yellow]✗[/yellow] avaliação reprovada — voltando para implementação"
+    )
     _print_eval_results(ctx.eval_result, only_failed=True)
     ctx.retries["implementation"] = retries + 1
-    return Transition(next_state="implementation", reason=ctx.eval_result.get("rejection_reason", ""))
+    return Transition(
+        next_state="implementation", reason=ctx.eval_result.get("rejection_reason", "")
+    )
 
 
 def state_human_gate_eval(ctx: Context) -> Transition:
     """Human gate: avaliação falhou após max retries."""
     console.print("\n[red bold]run requer intervenção humana[/red bold]")
-    console.print(f"  Motivo: {ctx.eval_result.get('rejection_reason', 'não especificado')}\n")
+    console.print(
+        f"  Motivo: {ctx.eval_result.get('rejection_reason', 'não especificado')}\n"
+    )
 
-    resposta = console.input("[yellow]forçar aprovação mesmo assim?[/yellow] [dim][s/N][/dim] ").strip().lower()
+    resposta = (
+        console.input(
+            "[yellow]forçar aprovação mesmo assim?[/yellow] [dim][s/N][/dim] "
+        )
+        .strip()
+        .lower()
+    )
     if resposta in ("s", "sim", "y", "yes"):
         return Transition(next_state="log", reason="aprovado manualmente pelo humano")
 
@@ -365,8 +402,12 @@ def state_human_gate_eval(ctx: Context) -> Transition:
 
 def _print_eval_results(eval_result: dict, only_failed: bool = False) -> None:
     """Exibe painel de resultados da avaliação."""
-    all_results = eval_result.get("dod_results", []) + eval_result.get("global_results", [])
-    items = [r for r in all_results if not r.get("passed")] if only_failed else all_results
+    all_results = eval_result.get("dod_results", []) + eval_result.get(
+        "global_results", []
+    )
+    items = (
+        [r for r in all_results if not r.get("passed")] if only_failed else all_results
+    )
 
     table = Table(show_header=False, box=None, padding=(0, 1))
     table.add_column(width=2)
@@ -381,7 +422,14 @@ def _print_eval_results(eval_result: dict, only_failed: bool = False) -> None:
     verdict = eval_result.get("verdict", "")
     color = "green" if verdict == "approved" else "red"
     title = "avaliação — aprovado" if verdict == "approved" else "avaliação — reprovado"
-    console.print(Panel(table, title=f"[{color}]{title}[/{color}]", border_style=color, padding=(0, 1)))
+    console.print(
+        Panel(
+            table,
+            title=f"[{color}]{title}[/{color}]",
+            border_style=color,
+            padding=(0, 1),
+        )
+    )
 
 
 def state_log(ctx: Context) -> Transition:
@@ -397,15 +445,17 @@ def state_log(ctx: Context) -> Transition:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     dod_lines = "\n".join(
-        f"- {'✓' if r.get('passed') else '✗'} {r['criterion']}" + (f" — {r['note']}" if r.get("note") else "")
+        f"- {'✓' if r.get('passed') else '✗'} {r['criterion']}"
+        + (f" — {r['note']}" if r.get("note") else "")
         for r in eval_result.get("dod_results", [])
     )
     global_lines = "\n".join(
-        f"- {'✓' if r.get('passed') else '✗'} {r['criterion']}" + (f" — {r['note']}" if r.get("note") else "")
+        f"- {'✓' if r.get('passed') else '✗'} {r['criterion']}"
+        + (f" — {r['note']}" if r.get("note") else "")
         for r in eval_result.get("global_results", [])
     )
 
-    log = f"""# Run Log — {spec.get('title', 'task')}
+    log = f"""# Run Log — {spec.get("title", "task")}
 
 **Data:** {now}
 **Veredicto:** {verdict}
@@ -420,13 +470,13 @@ def state_log(ctx: Context) -> Transition:
 
 ## Spec
 
-**Resumo:** {spec.get('summary', '')}
+**Resumo:** {spec.get("summary", "")}
 
 **DoD:**
-{chr(10).join(f'- {d}' for d in spec.get('dod', []))}
+{chr(10).join(f"- {d}" for d in spec.get("dod", []))}
 
 **Fora do escopo:**
-{chr(10).join(f'- {o}' for o in spec.get('out_of_scope', []))}
+{chr(10).join(f"- {o}" for o in spec.get("out_of_scope", []))}
 
 ---
 

@@ -22,9 +22,11 @@ MAX_RETRIES = 2  # padrão "dois strikes" — falhou duas vezes, escala pro huma
 # Tipos
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Context:
     """Estado compartilhado entre estados da run."""
+
     task_text: str
     run_dir: Path
     project_dir: Path
@@ -37,6 +39,7 @@ class Context:
 @dataclass
 class Transition:
     """Resultado de um estado — para onde ir e por quê."""
+
     next_state: str
     reason: str = ""
 
@@ -47,6 +50,7 @@ StateFn = Callable[[Context], Transition]
 # ---------------------------------------------------------------------------
 # Runner de subprocess
 # ---------------------------------------------------------------------------
+
 
 def _extract_json(text: str) -> str:
     """Extrai JSON do output — trata JSON puro, markdown code block, ou texto com JSON embutido."""
@@ -65,7 +69,7 @@ def _extract_json(text: str) -> str:
     start = text.rfind("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
-        return text[start:end + 1]
+        return text[start : end + 1]
 
     return text
 
@@ -97,10 +101,13 @@ def run_claude(
     cmd = [
         "claude",
         "--print",
-        "--output-format", "stream-json",
-        "--permission-mode", "auto",
+        "--output-format",
+        "stream-json",
+        "--permission-mode",
+        "auto",
         "--no-session-persistence",
-        "--system-prompt", system_prompt,
+        "--system-prompt",
+        system_prompt,
     ]
 
     if allowed_tools:
@@ -148,7 +155,9 @@ def run_claude(
                             short = text[:70] + "..." if len(text) > 70 else text
                             status.update(f"[dim]  {label}  {short}[/dim]")
                     elif block.get("type") == "tool_use":
-                        msg = _format_tool_event(block.get("name", ""), block.get("input", {}))
+                        msg = _format_tool_event(
+                            block.get("name", ""), block.get("input", {})
+                        )
                         status.update(f"[dim]  {label}  {msg}[/dim]")
 
             elif event_type == "result":
@@ -167,6 +176,7 @@ def run_claude(
 # ---------------------------------------------------------------------------
 # State machine
 # ---------------------------------------------------------------------------
+
 
 def run_pipeline(ctx: Context, start_state: str = "git_check") -> None:
     """Executa a state machine até o estado 'done'."""
@@ -190,6 +200,7 @@ def run_pipeline(ctx: Context, start_state: str = "git_check") -> None:
 # Entrypoint
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     """Entrypoint do c-harness."""
     args = sys.argv[1:]
@@ -200,10 +211,14 @@ def main() -> None:
         sys.exit(1)
 
     project_dir = Path.cwd()
-    run_dir = project_dir / ".harness" / "runs" / datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_dir = (
+        project_dir / ".harness" / "runs" / datetime.now().strftime("%Y%m%d-%H%M%S")
+    )
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    console.print(f"\n[bold]c-harness[/bold] [dim]→ {run_dir.relative_to(project_dir)}[/dim]\n")
+    console.print(
+        f"\n[bold]c-harness[/bold] [dim]→ {run_dir.relative_to(project_dir)}[/dim]\n"
+    )
 
     # Modo de edição de spec existente: --edit <spec-path>
     if args[0] == "--edit":
@@ -223,7 +238,9 @@ def main() -> None:
             sys.exit(1)
 
         # Copia a spec original para o run_dir como ponto de partida
-        (run_dir / "spec.json").write_text(json.dumps(spec_data, indent=2, ensure_ascii=False))
+        (run_dir / "spec.json").write_text(
+            json.dumps(spec_data, indent=2, ensure_ascii=False)
+        )
 
         ctx = Context(
             task_text=spec_data.get("summary", ""),
@@ -244,4 +261,6 @@ def main() -> None:
 
         run_pipeline(ctx)
 
-    console.print(f"\n[bold green]✓ run concluída[/bold green] [dim]→ {run_dir.relative_to(project_dir)}[/dim]\n")
+    console.print(
+        f"\n[bold green]✓ run concluída[/bold green] [dim]→ {run_dir.relative_to(project_dir)}[/dim]\n"
+    )

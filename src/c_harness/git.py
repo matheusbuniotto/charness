@@ -8,6 +8,7 @@ from pathlib import Path
 @dataclass
 class GitContext:
     """Informações git do projeto."""
+
     branch: str
     log: str
     is_clean: bool

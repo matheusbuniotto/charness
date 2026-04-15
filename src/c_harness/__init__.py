@@ -1,7 +1,15 @@
 """c-harness: CLI para desenvolvimento assistido por agentes com Claude Code."""
 
 from .git import GitContext, collect_git_context
-from .runner import Context, Transition, StateFn, console, run_claude, run_pipeline, main
+from .runner import (
+    Context,
+    StateFn,
+    Transition,
+    console,
+    main,
+    run_claude,
+    run_pipeline,
+)
 from .states import STATES
 
 __all__ = [
