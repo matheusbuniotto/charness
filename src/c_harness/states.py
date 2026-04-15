@@ -383,6 +383,14 @@ def state_automated_checks(ctx: Context) -> Transition:
         
         if result.returncode != 0:
             console.print(f"  [red]✗ falhou:[/red] {cmd}")
+            err_output = (result.stderr or result.stdout).strip()
+            if err_output:
+                lines = err_output.splitlines()
+                console.print("\n".join(f"    [dim]{line}[/dim]" for line in lines[:10]))
+                if len(lines) > 10:
+                    console.print("    [dim]... (truncado)[/dim]")
+            
+            console.print("[yellow]✗[/yellow] checks reprovados — voltando para implementação")
             # Voltar para implementação com erro
             retries = ctx.retries.get("implementation", 0)
             if retries >= MAX_RETRIES:
