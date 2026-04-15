@@ -197,6 +197,41 @@ def run_pipeline(ctx: Context, start_state: str = "git_check") -> None:
 
 
 # ---------------------------------------------------------------------------
+# Validação e roteamento de entrada
+# ---------------------------------------------------------------------------
+
+SPEC_REQUIRED_FIELDS = ("title", "summary", "dod", "out_of_scope", "notes")
+
+
+def validate_spec(data: dict) -> list[str]:
+    """Valida campos obrigatórios de uma spec local.
+
+    Returns:
+        Lista de erros encontrados. Vazia se a spec for válida.
+    """
+    errors = []
+    for key in SPEC_REQUIRED_FIELDS:
+        if key not in data:
+            errors.append(f"campo ausente: '{key}'")
+        elif key in ("dod", "out_of_scope") and not isinstance(data[key], list):
+            errors.append(f"campo '{key}' deve ser uma lista")
+    return errors
+
+
+def _detect_input_mode(args: list[str]) -> tuple[str, str | None]:
+    """Detecta o modo de entrada a partir dos argumentos.
+
+    Returns:
+        Tupla (modo, caminho_ou_none) onde modo é 'free_text', 'local_spec' ou 'resume'.
+    """
+    if len(args) == 1:
+        candidate = Path(args[0])
+        if candidate.suffix == ".json" and candidate.exists():
+            return "json_file", str(candidate)
+    return "free_text", None
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
@@ -207,6 +242,8 @@ def main() -> None:
 
     if not args:
         console.print("[yellow]uso:[/yellow] c-harness '<descrição da task>'")
+        console.print("       c-harness <caminho/para/spec.json>     [dim]# spec local[/dim]")
+        console.print("       c-harness <caminho/para/resume.json>   [dim]# retomada[/dim]")
         console.print("       c-harness --edit <caminho/para/spec.json>")
         sys.exit(1)
 
@@ -250,16 +287,106 @@ def main() -> None:
         )
 
         run_pipeline(ctx, start_state="human_gate_spec")
+
     else:
-        task_text = " ".join(args)
+        mode, json_path = _detect_input_mode(args)
 
-        ctx = Context(
-            task_text=task_text,
-            run_dir=run_dir,
-            project_dir=project_dir,
-        )
+        if mode == "json_file":
+            json_file = Path(json_path)  # type: ignore[arg-type]
+            try:
+                data = json.loads(json_file.read_text())
+            except json.JSONDecodeError as exc:
+                console.print(f"[red][erro][/red] JSON inválido em {json_file}: {exc}")
+                sys.exit(1)
 
-        run_pipeline(ctx)
+            if "resume_from" in data:
+                # --- Modo retomada ---
+                resume = data["resume_from"]
+                resume_state = resume.get("state", "implementation")
+                resume_spec = resume.get("spec")
+                resume_retries = resume.get("retries", {})
+                resume_eval = resume.get("eval_result", {})
+                original_run_dir = resume.get("run_dir")
+
+                # Valida campos mínimos do resume
+                resume_errors = []
+                if not resume_spec:
+                    resume_errors.append("campo 'spec' ausente ou vazio em 'resume_from'")
+                if resume_state not in (
+                    "git_check", "spec_generation", "spec_edit", "human_gate_spec",
+                    "implementation", "human_gate_commit", "evaluation",
+                    "human_gate_eval", "log",
+                ):
+                    resume_errors.append(
+                        f"campo 'state' inválido em 'resume_from': '{resume_state}'"
+                    )
+                if resume_errors:
+                    console.print("[red][erro][/red] resume inválido:")
+                    for err in resume_errors:
+                        console.print(f"  [red]•[/red] {err}")
+                    sys.exit(1)
+
+                console.print(
+                    f"[bold]modo:[/bold] retomada → continuando de [cyan]{resume_state}[/cyan]"
+                )
+                if original_run_dir:
+                    console.print(f"  [dim]run original: {original_run_dir}[/dim]")
+
+                # Salva cópia da spec na nova run_dir
+                (run_dir / "spec.json").write_text(
+                    json.dumps(resume_spec, indent=2, ensure_ascii=False)
+                )
+
+                ctx = Context(
+                    task_text=resume_spec.get("summary", ""),
+                    run_dir=run_dir,
+                    project_dir=project_dir,
+                    spec=resume_spec,
+                    eval_result=resume_eval,
+                    retries=resume_retries,
+                )
+
+                run_pipeline(ctx, start_state=resume_state)
+
+            else:
+                # --- Modo spec local ---
+                errors = validate_spec(data)
+                if errors:
+                    console.print("[red][erro][/red] spec inválida:")
+                    for err in errors:
+                        console.print(f"  [red]•[/red] {err}")
+                    sys.exit(1)
+
+                console.print(
+                    f"[bold]modo:[/bold] spec local → [dim]{json_file}[/dim]"
+                )
+
+                # Salva cópia da spec na run_dir (sem re-estruturar)
+                (run_dir / "spec.json").write_text(
+                    json.dumps(data, indent=2, ensure_ascii=False)
+                )
+
+                ctx = Context(
+                    task_text=data.get("summary", ""),
+                    run_dir=run_dir,
+                    project_dir=project_dir,
+                    spec=data,
+                )
+
+                run_pipeline(ctx, start_state="human_gate_spec")
+
+        else:
+            # --- Modo texto livre ---
+            task_text = " ".join(args)
+            console.print("[bold]modo:[/bold] texto livre → gerando spec")
+
+            ctx = Context(
+                task_text=task_text,
+                run_dir=run_dir,
+                project_dir=project_dir,
+            )
+
+            run_pipeline(ctx)
 
     console.print(
         f"\n[bold green]✓ run concluída[/bold green] [dim]→ {run_dir.relative_to(project_dir)}[/dim]\n"

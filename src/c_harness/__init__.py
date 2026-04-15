@@ -9,6 +9,7 @@ from .runner import (
     main,
     run_claude,
     run_pipeline,
+    validate_spec,
 )
 from .states import STATES
 
@@ -21,6 +22,7 @@ __all__ = [
     "console",
     "run_claude",
     "run_pipeline",
+    "validate_spec",
     "main",
     "STATES",
 ]
