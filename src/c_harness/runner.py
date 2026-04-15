@@ -10,7 +10,7 @@ from typing import Callable, Literal
 
 from rich.console import Console
 
-from .agents import Agent, create_agent
+from .agents import Agent, create_agent, TokenUsage
 from .git import GitContext
 
 console = Console()
@@ -27,6 +27,15 @@ _agent_instance: Agent | None = None
 
 
 @dataclass
+class RunMetrics:
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cache_creation_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    total_cost_usd: float = 0.0
+    steps: list[dict] = field(default_factory=list)
+
+@dataclass
 class Context:
     """Estado compartilhado entre estados da run."""
 
@@ -37,6 +46,7 @@ class Context:
     eval_result: dict = field(default_factory=dict)
     retries: dict = field(default_factory=dict)
     git: GitContext | None = None
+    metrics: RunMetrics = field(default_factory=RunMetrics)
 
 
 @dataclass
@@ -88,7 +98,7 @@ def run_agent(
     cwd: Path,
     label: str = "",
     allowed_tools: list[str] | None = None,
-) -> str:
+) -> tuple[str, TokenUsage]:
     """Executa o agente configurado (claude ou pi).
 
     Usa a instância global do agente configurada via configure_agent().

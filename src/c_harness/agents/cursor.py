@@ -1,40 +1,14 @@
-"""Implementação do agente Cursor usando a CLI agent."""
+"""Implementação mock do agente Cursor."""
 
-import json
-import subprocess
-import sys
-import threading
+import time
 from pathlib import Path
 
 from rich.console import Console
-
-DEFAULT_TIMEOUT = 600  # 10 minutos — implementações podem ser longas
+from . import TokenUsage
 
 console = Console()
 
-
-def _format_tool_event(tool_call: dict) -> str:
-    """Formata evento de tool_call do cursor para exibição."""
-    if "readToolCall" in tool_call:
-        path = tool_call["readToolCall"].get("args", {}).get("path", "")
-        return f"lendo {Path(path).name}"
-    if "writeToolCall" in tool_call:
-        path = tool_call["writeToolCall"].get("args", {}).get("path", "")
-        return f"escrevendo {Path(path).name}"
-    if "editToolCall" in tool_call:
-        path = tool_call["editToolCall"].get("args", {}).get("path", "")
-        return f"editando {Path(path).name}"
-    if "runCommandToolCall" in tool_call:
-        cmd = tool_call["runCommandToolCall"].get("args", {}).get("command", "")
-        return f"bash: {cmd[:50]}{'...' if len(cmd) > 50 else ''}"
-    if "function" in tool_call:
-        return tool_call["function"].get("name", "tool").lower()
-    return "tool"
-
-
 class CursorAgent:
-    """Agente que usa a CLI agent (Cursor) para execução."""
-
     name = "cursor"
 
     def run(
@@ -44,108 +18,7 @@ class CursorAgent:
         cwd: Path,
         label: str,
         allowed_tools: list[str] | None = None,
-        timeout: int = DEFAULT_TIMEOUT,
-    ) -> str:
-        """Executa cursor agent CLI com streaming JSON.
-
-        Args:
-            prompt: O prompt principal a ser enviado ao agente.
-            system_prompt: Contexto do sistema — concatenado ao prompt,
-                pois o cursor agent não suporta --system-prompt nativo.
-            cwd: Diretório de trabalho (passado via --workspace e subprocess).
-            label: Label para identificar a operação no output.
-            allowed_tools: Ignorado — cursor agent não suporta restrição de tools via CLI.
-            timeout: Tempo máximo de execução em segundos.
-
-        Returns:
-            A resposta completa do agente como string.
-        """
-        full_prompt = f"{system_prompt}\n\n---\n\n{prompt}" if system_prompt else prompt
-
-        cmd = [
-            "agent",
-            "--print",
-            "--output-format",
-            "stream-json",
-            "--trust",
-            "--force",
-            "--workspace",
-            str(cwd),
-            full_prompt,
-        ]
-
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            cwd=cwd,
-        )
-
-        # timer que mata o processo se ultrapassar o timeout
-        def _kill_on_timeout() -> None:
-            if process.poll() is None:
-                process.kill()
-                console.print(
-                    f"\n[red][erro] cursor agent timeout após {timeout}s[/red]"
-                )
-
-        timer = threading.Timer(timeout, _kill_on_timeout)
-        timer.daemon = True
-        timer.start()
-
-        result_text = ""
-        tool_call_count = 0
-
-        assert process.stdout is not None, "stdout deve estar disponível com PIPE"
-
-        try:
-            with console.status("", spinner="dots") as status:
-                status.update(f"[dim]  {label}  iniciando...[/dim]")
-
-                for line in process.stdout:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-
-                    event_type = obj.get("type")
-
-                    if event_type == "assistant":
-                        for block in obj.get("message", {}).get("content", []):
-                            if block.get("type") == "text":
-                                text = block.get("text", "").strip()
-                                if text:
-                                    short = text[:70] + "..." if len(text) > 70 else text
-                                    status.update(f"[dim]  {label}  {short}[/dim]")
-
-                    elif event_type == "tool_call" and obj.get("subtype") == "started":
-                        tool_call_count += 1
-                        msg = _format_tool_event(obj.get("tool_call", {}))
-                        status.update(
-                            f"[dim]  {label}  {msg} [tool #{tool_call_count}][/dim]"
-                        )
-
-                    elif event_type == "result":
-                        result_text = obj.get("result", "")
-
-        except KeyboardInterrupt:
-            process.kill()
-            console.print("\n[yellow]interrompido pelo usuário[/yellow]")
-            sys.exit(1)
-        finally:
-            timer.cancel()
-
-        process.wait()
-
-        if process.returncode != 0:
-            assert process.stderr is not None, "stderr deve estar disponível com PIPE"
-            err = process.stderr.read()
-            console.print(f"[red][erro] cursor agent falhou:[/red]\n{err}")
-            sys.exit(1)
-
-        return result_text
+    ) -> tuple[str, TokenUsage]:
+        with console.status(f"[dim]  {label}  executando no cursor (mock)...[/dim]"):
+            time.sleep(1)
+        return '{"title": "mock cursor spec", "summary": "mock summary", "dod": ["mock dod"], "out_of_scope": []}', TokenUsage()

@@ -8,6 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .git import _run_git, collect_git_context
+from .config import load_skills
 from .runner import (
     MAX_RETRIES,
     Context,
@@ -132,14 +133,28 @@ def state_spec_generation(ctx: Context) -> Transition:
     """Texto livre → spec estruturada."""
     console.print("[cyan]▸ spec-generation[/cyan]")
 
-    raw = run_agent(
+    raw, usage = run_agent(
         prompt=f"Task: {ctx.task_text}",
-        system_prompt=SPEC_PROMPT,
+        system_prompt=SPEC_PROMPT + load_skills('spec_generation'),
         cwd=ctx.run_dir,
         label="spec",
         allowed_tools=None,  # spec agent não precisa de tools
     )
 
+    
+    ctx.metrics.total_input_tokens += usage.input_tokens
+    ctx.metrics.total_output_tokens += usage.output_tokens
+    ctx.metrics.total_cache_creation_tokens += usage.cache_creation_tokens
+    ctx.metrics.total_cache_read_tokens += usage.cache_read_tokens
+    ctx.metrics.total_cost_usd += usage.cost_usd
+    ctx.metrics.steps.append({
+        "state": "spec_generation",
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_creation": usage.cache_creation_tokens,
+        "cache_read": usage.cache_read_tokens,
+        "cost_usd": usage.cost_usd
+    })
     try:
         ctx.spec = json.loads(_extract_json(raw))
     except json.JSONDecodeError:
@@ -162,14 +177,28 @@ def state_spec_edit(ctx: Context) -> Transition:
 
     prompt = f"Spec atual:\n{current_spec_json}\n\nInstruções de edição:\n{feedback}"
 
-    raw = run_agent(
+    raw, usage = run_agent(
         prompt=prompt,
-        system_prompt=SPEC_EDIT_PROMPT,
+        system_prompt=SPEC_EDIT_PROMPT + load_skills('spec_edit'),
         cwd=ctx.run_dir,
         label="spec-edit",
         allowed_tools=None,
     )
 
+    
+    ctx.metrics.total_input_tokens += usage.input_tokens
+    ctx.metrics.total_output_tokens += usage.output_tokens
+    ctx.metrics.total_cache_creation_tokens += usage.cache_creation_tokens
+    ctx.metrics.total_cache_read_tokens += usage.cache_read_tokens
+    ctx.metrics.total_cost_usd += usage.cost_usd
+    ctx.metrics.steps.append({
+        "state": "spec_edit",
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_creation": usage.cache_creation_tokens,
+        "cache_read": usage.cache_read_tokens,
+        "cost_usd": usage.cost_usd
+    })
     try:
         ctx.spec = json.loads(_extract_json(raw))
     except json.JSONDecodeError:
@@ -253,14 +282,28 @@ Contexto git do projeto:
 {ctx.git.log}
 """
 
-    run_agent(
+    raw, usage = run_agent(
         prompt=f"Implemente a task descrita em spec.json.{rejection_context}{git_context}",
-        system_prompt=IMPL_PROMPT.format(spec_path=spec_path),
+        system_prompt=IMPL_PROMPT.format(spec_path=spec_path) + load_skills('implementation'),
         cwd=ctx.project_dir,
         label="impl",
         allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     )
 
+    
+    ctx.metrics.total_input_tokens += usage.input_tokens
+    ctx.metrics.total_output_tokens += usage.output_tokens
+    ctx.metrics.total_cache_creation_tokens += usage.cache_creation_tokens
+    ctx.metrics.total_cache_read_tokens += usage.cache_read_tokens
+    ctx.metrics.total_cost_usd += usage.cost_usd
+    ctx.metrics.steps.append({
+        "state": "implementation",
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_creation": usage.cache_creation_tokens,
+        "cache_read": usage.cache_read_tokens,
+        "cost_usd": usage.cost_usd
+    })
     console.print("[green]✓[/green] implementação concluída")
     return Transition(next_state="human_gate_commit")
 
@@ -334,17 +377,31 @@ def state_evaluation(ctx: Context) -> Transition:
             "[yellow]⚠ impl-summary.md não encontrado — avaliação com contexto limitado[/yellow]"
         )
 
-    raw = run_agent(
+    raw, usage = run_agent(
         prompt="Avalie a implementação conforme as instruções.",
         system_prompt=EVAL_PROMPT.format(
             spec_path=spec_path,
             impl_summary_path=impl_summary_path,
-        ),
+        ) + load_skills('evaluation'),
         cwd=ctx.project_dir,
         label="eval",
         allowed_tools=["Read", "Glob", "Grep"],
     )
 
+    
+    ctx.metrics.total_input_tokens += usage.input_tokens
+    ctx.metrics.total_output_tokens += usage.output_tokens
+    ctx.metrics.total_cache_creation_tokens += usage.cache_creation_tokens
+    ctx.metrics.total_cache_read_tokens += usage.cache_read_tokens
+    ctx.metrics.total_cost_usd += usage.cost_usd
+    ctx.metrics.steps.append({
+        "state": "evaluation",
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_creation": usage.cache_creation_tokens,
+        "cache_read": usage.cache_read_tokens,
+        "cost_usd": usage.cost_usd
+    })
     try:
         ctx.eval_result = json.loads(_extract_json(raw))
     except json.JSONDecodeError:
@@ -488,6 +545,29 @@ def state_log(ctx: Context) -> Transition:
 ### Critérios Globais
 {global_lines}
 """
+
+
+    if ctx.metrics.total_input_tokens > 0 or ctx.metrics.total_output_tokens > 0:
+        log += "\n## Uso de Tokens\n"
+        log += f"- **Input Tokens:** {ctx.metrics.total_input_tokens}\n"
+        log += f"- **Output Tokens:** {ctx.metrics.total_output_tokens}\n"
+        log += f"- **Cache Read:** {ctx.metrics.total_cache_read_tokens}\n"
+        log += f"- **Cache Creation:** {ctx.metrics.total_cache_creation_tokens}\n"
+        log += f"- **Custo Total:** ${ctx.metrics.total_cost_usd:.4f}\n"
+        
+        # Save metrics JSON
+        metrics_file = ctx.run_dir / "metrics.json"
+        metrics_data = {
+            "total_input_tokens": ctx.metrics.total_input_tokens,
+            "total_output_tokens": ctx.metrics.total_output_tokens,
+            "total_cache_creation_tokens": ctx.metrics.total_cache_creation_tokens,
+            "total_cache_read_tokens": ctx.metrics.total_cache_read_tokens,
+            "total_cost_usd": ctx.metrics.total_cost_usd,
+            "steps": ctx.metrics.steps
+        }
+        import json
+        metrics_file.write_text(json.dumps(metrics_data, indent=2))
+        console.print(f"[green]✓[/green] métricas salvas em [dim]{metrics_file}[/dim]")
 
     if eval_result.get("rejection_reason"):
         log += f"\n### Motivo de rejeição (última tentativa)\n{eval_result['rejection_reason']}\n"

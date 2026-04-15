@@ -5,13 +5,11 @@ import sys
 from pathlib import Path
 
 from rich.console import Console
+from . import TokenUsage
 
 console = Console()
 
-
 class PiAgent:
-    """Agente que usa a CLI pi para execução."""
-
     name = "pi"
 
     def run(
@@ -21,8 +19,7 @@ class PiAgent:
         cwd: Path,
         label: str,
         allowed_tools: list[str] | None = None,
-    ) -> str:
-        """Executa pi CLI com saída simples (pi não tem streaming JSON)."""
+    ) -> tuple[str, TokenUsage]:
         cmd = [
             "pi",
             "--print",
@@ -32,8 +29,6 @@ class PiAgent:
         ]
 
         if allowed_tools:
-            # pi usa --tools com lista separada por vírgula
-            # Mapeia nomes: Glob/Grep do claude -> find/grep do pi
             tool_map = {
                 "Read": "read",
                 "Write": "write",
@@ -53,20 +48,17 @@ class PiAgent:
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    stdin=subprocess.DEVNULL,  # EOF imediato → pi encerra após responder
+                    stdin=subprocess.DEVNULL,
                     text=True,
                     cwd=cwd,
                     timeout=300,
                 )
             except subprocess.TimeoutExpired:
                 console.print("[red][erro] pi travado (timeout)[/red]")
-                console.print("[dim]possíveis causas:[/dim]")
-                console.print("  • pi esperando confirmação de permissão")
-                console.print("  • tarefa muito longa — considere aumentar o timeout")
                 sys.exit(1)
 
         if result.returncode != 0:
             console.print(f"[red][erro] pi falhou:[/red]\n{result.stderr}")
             sys.exit(1)
 
-        return result.stdout
+        return result.stdout, TokenUsage() # pi currently does not output usage easily

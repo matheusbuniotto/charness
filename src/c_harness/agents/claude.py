@@ -6,9 +6,9 @@ import sys
 from pathlib import Path
 
 from rich.console import Console
+from . import TokenUsage
 
 console = Console()
-
 
 def _format_tool_event(tool_name: str, tool_input: dict) -> str:
     """Formata evento de tool use para exibição."""
@@ -25,10 +25,7 @@ def _format_tool_event(tool_name: str, tool_input: dict) -> str:
         return f"grep: {tool_input.get('pattern', '')}"
     return tool_name.lower()
 
-
 class ClaudeAgent:
-    """Agente que usa a CLI claude para execução."""
-
     name = "claude"
 
     def run(
@@ -38,8 +35,7 @@ class ClaudeAgent:
         cwd: Path,
         label: str,
         allowed_tools: list[str] | None = None,
-    ) -> str:
-        """Executa claude CLI com streaming JSON."""
+    ) -> tuple[str, TokenUsage]:
         cmd = [
             "claude",
             "--print",
@@ -74,8 +70,9 @@ class ClaudeAgent:
             process.stdin.close()
 
         result_text = ""
+        usage = TokenUsage()
 
-        assert process.stdout is not None, "stdout deve estar disponível com PIPE"
+        assert process.stdout is not None, "stdout deve estar disponível"
 
         with console.status("", spinner="dots") as status:
             status.update(f"[dim]  {label}  iniciando...[/dim]")
@@ -106,13 +103,19 @@ class ClaudeAgent:
 
                 elif event_type == "result":
                     result_text = obj.get("result", "")
+                    u = obj.get("usage", {})
+                    usage.input_tokens = u.get("input_tokens", 0)
+                    usage.output_tokens = u.get("output_tokens", 0)
+                    usage.cache_creation_tokens = u.get("cache_creation_input_tokens", 0)
+                    usage.cache_read_tokens = u.get("cache_read_input_tokens", 0)
+                    usage.cost_usd = obj.get("total_cost_usd", 0.0)
 
         process.wait()
 
         if process.returncode != 0:
-            assert process.stderr is not None, "stderr deve estar disponível com PIPE"
+            assert process.stderr is not None
             err = process.stderr.read()
             console.print(f"[red][erro] claude falhou:[/red]\n{err}")
             sys.exit(1)
 
-        return result_text
+        return result_text, usage

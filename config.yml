@@ -1,0 +1,21 @@
+# Configuração do c-harness
+harness:
+  # Diretório onde ficam as skills específicas para as runs
+  skills_dir: "skills"
+  
+  # Skills globais a carregar de ~/.claude/skills ou .claude/skills do projeto.
+  # Se vazio/ausente, carregará TODAS as skills globais encontradas (pode inflar muito o contexto).
+  # global_skills:
+  #   - "grug"
+  #   - "harness"
+  
+  # Rastreio de uso de tokens e contexto
+  metrics:
+    save_tokens: true
+    log_file: "metrics.json"
+
+agents:
+  claude:
+    model: "claude-3-5-sonnet-latest"
+  pi:
+    model: "default"

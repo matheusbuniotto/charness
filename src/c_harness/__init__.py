@@ -1,6 +1,6 @@
 """c-harness: CLI para desenvolvimento assistido por agentes."""
 
-from .agents import Agent, ClaudeAgent, CursorAgent, PiAgent, create_agent
+from .agents import Agent, create_agent
 from .git import GitContext, collect_git_context
 from .runner import (
     Context,
@@ -18,9 +18,6 @@ from .states import STATES
 
 __all__ = [
     "Agent",
-    "ClaudeAgent",
-    "CursorAgent",
-    "PiAgent",
     "configure_agent",
     "create_agent",
     "GitContext",
