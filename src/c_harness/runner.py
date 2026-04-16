@@ -233,49 +233,48 @@ def _spec_to_md(
     dod: list[str],
     out_of_scope: list[str],
     notes: str,
+    files: list[str] | None = None,
 ) -> str:
     lines = [f"# {title}\n", f"**Summary:** {summary}\n", "## DoD (Definition of Done)"]
     lines += [f"- [ ] {d}" for d in dod] or ["- critério 1"]
     lines += ["", "## Out of Scope"]
     lines += [f"- {o}" for o in out_of_scope] or ["- nenhum"]
+    if files:
+        lines += ["", "## Arquivos Relevantes"]
+        lines += [f"- `{f}`" for f in files]
     lines += ["", "## Notes", notes or "- contexto extra", ""]
     return "\n".join(lines)
 
 
-def _wizard_collect() -> tuple[str, str, list[str], list[str], str]:
+def _collect_list(label: str) -> list[str]:
+    """Coleta lista de itens interativamente. 'u' desfaz o último."""
+    console.print(f"{label}:")
+    items: list[str] = []
+    while True:
+        item = console.input(f"  {len(items) + 1}. ").strip()
+        if not item:
+            break
+        if item.lower() == "u" and items:
+            console.print(f"  ↩ removido: {items.pop()}")
+        elif item.lower() != "u":
+            items.append(item)
+    return items
+
+
+def _wizard_collect() -> tuple[str, str, list[str], list[str], list[str], str]:
     """Coleta campos da spec interativamente com suporte a undo."""
-    console.print(
-        "\n  [dim]listas: Enter vazio para terminar · 'u' + Enter para desfazer o último item[/dim]\n"
-    )
+    console.print("\n  listas: Enter vazio para terminar, 'u' + Enter para desfazer\n")
 
     title = console.input("título (ex: Adicionar login OAuth): ").strip()
     summary = console.input("summary (o que precisa ser feito, 2-3 frases): ").strip()
-
-    console.print("DoD — critérios de done:")
-    dod: list[str] = []
-    while True:
-        item = console.input(f"  {len(dod) + 1}. ").strip()
-        if not item:
-            break
-        if item.lower() == "u" and dod:
-            console.print(f"  ↩ removido: {dod.pop()}")
-        elif item.lower() != "u":
-            dod.append(item)
-
-    console.print("out of scope — o que NÃO deve ser feito:")
-    out_of_scope: list[str] = []
-    while True:
-        item = console.input(f"  {len(out_of_scope) + 1}. ").strip()
-        if not item:
-            break
-        if item.lower() == "u" and out_of_scope:
-            console.print(f"  ↩ removido: {out_of_scope.pop()}")
-        elif item.lower() != "u":
-            out_of_scope.append(item)
-
+    dod = _collect_list("DoD — critérios de done")
+    out_of_scope = _collect_list("out of scope — o que NÃO deve ser feito")
+    files = _collect_list(
+        "arquivos relevantes — caminhos que o agente deve ler (ex: src/foo.py)"
+    )
     notes = console.input("notes (contexto extra, Enter para pular): ").strip()
 
-    return title, summary, dod, out_of_scope, notes
+    return title, summary, dod, out_of_scope, files, notes
 
 
 def _run_new_spec(spec_id: str) -> None:
@@ -302,7 +301,7 @@ def _run_new_spec(spec_id: str) -> None:
         "  [green]t[/green]  só template    [dim](abre arquivo em branco para editar)[/dim]"
     )
     console.print()
-    choice = console.input("[yellow]modo [a/m/t]:[/yellow] ").strip().lower()
+    choice = console.input("[yellow]modo[/yellow] (a/m/t): ").strip().lower()
 
     if choice in ("a", "ia", "ai"):
         description = console.input("descreva a task: ").strip()
@@ -332,9 +331,12 @@ def _run_new_spec(spec_id: str) -> None:
         dod = data.get("dod", [])
         out_of_scope = data.get("out_of_scope", [])
         notes = data.get("notes") or ""
+        files = _collect_list(
+            "arquivos relevantes — caminhos que o agente deve ler (Enter para pular)"
+        )
 
     elif choice in ("m", "manual", "wizard"):
-        title, summary, dod, out_of_scope, notes = _wizard_collect()
+        title, summary, dod, out_of_scope, files, notes = _wizard_collect()
         if not title:
             title = spec_id
 
@@ -362,25 +364,72 @@ Descreva o que precisa ser feito em 2-3 frases.
         )
         return
 
-    md = _spec_to_md(spec_id, title, summary, dod, out_of_scope, notes)
+    from .states import SPEC_EDIT_PROMPT
 
-    console.print(f"\n[dim]{'─' * 50}[/dim]")
-    console.print(f"[bold]{title}[/bold]")
-    console.print(f"[dim]{summary}[/dim]")
-    if dod:
-        console.print(f"  DoD: {len(dod)} critérios")
-        for d in dod:
-            console.print(f"    [dim]• {d}[/dim]")
-    console.print(f"[dim]{'─' * 50}[/dim]\n")
+    while True:
+        md = _spec_to_md(spec_id, title, summary, dod, out_of_scope, notes, files)
 
-    confirm = console.input("salvar spec? [s/N]: ").strip().lower()
-    if confirm not in ("s", "sim", "y", "yes"):
-        console.print("[dim]abortado.[/dim]")
+        console.print(f"\n{'─' * 50}")
+        console.print(f"[bold]{title}[/bold]")
+        console.print(summary)
+        if dod:
+            console.print(f"  DoD: {len(dod)} critérios")
+            for d in dod:
+                console.print(f"    • {d}")
+        if files:
+            console.print(f"  arquivos: {', '.join(files)}")
+        console.print(f"{'─' * 50}\n")
+
+        answer = (
+            console.input("salvar spec? (s / n / e=editar com IA): ").strip().lower()
+        )
+
+        if answer in ("s", "sim", "y", "yes"):
+            break
+
+        if answer in ("e", "edit", "editar"):
+            feedback = console.input("o que mudar: ").strip()
+            if not feedback:
+                console.print("nenhuma instrução — mantendo spec atual.")
+                continue
+
+            current_json = json.dumps(
+                {
+                    "title": title,
+                    "summary": summary,
+                    "dod": dod,
+                    "out_of_scope": out_of_scope,
+                    "notes": notes,
+                },
+                ensure_ascii=False,
+            )
+            raw, _ = run_agent(
+                prompt=f"Spec atual:\n{current_json}\n\nInstruções de edição:\n{feedback}",
+                system_prompt=SPEC_EDIT_PROMPT,
+                cwd=specs_dir,
+                label="spec-edit",
+                allowed_tools=None,
+                state="spec_edit",
+            )
+            try:
+                data = json.loads(_extract_json(raw))
+                title = data.get("title", title)
+                summary = data.get("summary", summary)
+                dod = data.get("dod", dod)
+                out_of_scope = data.get("out_of_scope", out_of_scope)
+                notes = data.get("notes") or notes
+            except Exception:
+                console.print(
+                    "[red]erro ao parsear spec editada — mantendo versão anterior[/red]"
+                )
+            continue
+
+        console.print("abortado.")
         return
 
     spec_path.write_text(md)
     console.print(f"[green]✓[/green] spec salva em [bold]{spec_path}[/bold]")
-    console.print(f"  [dim]execute: c-harness run {spec_id}[/dim]")
+    console.print(f"  execute: c-harness run {spec_id}")
 
 
 def _run_setup() -> None:
