@@ -47,6 +47,7 @@ class Context:
     retries: dict = field(default_factory=dict)
     git: GitContext | None = None
     metrics: RunMetrics = field(default_factory=RunMetrics)
+    spec_id: str | None = None
 
 
 @dataclass
@@ -227,6 +228,39 @@ def _parse_args(args: list[str]) -> tuple[dict[str, str], list[str]]:
 
 
 
+
+def _run_new_spec(spec_id: str) -> None:
+    """Cria um template markdown para Spec Driven Development."""
+    if not spec_id.startswith("spec-"):
+        spec_id = f"spec-{spec_id}"
+        
+    specs_dir = Path(".harness/specs")
+    specs_dir.mkdir(parents=True, exist_ok=True)
+    
+    spec_path = specs_dir / f"{spec_id}.md"
+    if spec_path.exists():
+        console.print(f"[yellow]⚠ {spec_path} já existe.[/yellow]")
+        return
+        
+    template = f"""# {spec_id}
+
+**Summary:** 
+Descreva o que precisa ser feito em 2-3 frases.
+
+## DoD (Definition of Done)
+- critério 1
+- critério 2
+
+## Out of Scope
+- o que NÃO deve ser feito
+
+## Notes
+- contexto extra
+"""
+    spec_path.write_text(template)
+    console.print(f"[green]✓[/green] template criado em [bold]{spec_path}[/bold]")
+    console.print(f"  [dim]edite o arquivo e depois execute: c-harness run {spec_id}[/dim]")
+
 def _run_setup() -> None:
     """Configura o c-harness no projeto atual."""
     harness_dir = Path(".harness")
@@ -315,6 +349,13 @@ def main() -> None:
         _run_setup()
         sys.exit(0)
 
+    if args and args[0] == "new":
+        if len(args) < 2:
+            console.print("[red]Uso:[/red] c-harness new <spec-id>")
+            sys.exit(1)
+        _run_new_spec(args[1])
+        sys.exit(0)
+
     # Configura agente backend
 
     agent = flags.get("agent", "claude")
@@ -352,6 +393,26 @@ def main() -> None:
     console.print(f"\n[bold]c-harness[/bold] ({get_agent_backend()}) → ", end="")
     console.print(str(run_dir.relative_to(project_dir)), style="dim")
     console.print()
+
+
+    if args[0] == "run":
+        if len(args) < 2:
+            console.print("[red]Uso:[/red] c-harness run <spec-id>")
+            sys.exit(1)
+        spec_id = args[1]
+        if not spec_id.startswith("spec-"):
+            spec_id = f"spec-{spec_id}"
+            
+        ctx = Context(
+            task_text="",
+            run_dir=run_dir,
+            project_dir=project_dir,
+            metrics=RunMetrics()
+        )
+        ctx.spec_id = spec_id
+        console.print(f"[bold]modo:[/bold] spec-driven → {spec_id}")
+        run_pipeline(ctx)
+        sys.exit(0)
 
     # Modo de edição de spec existente: --edit <spec-path>
     if args[0] == "--edit":

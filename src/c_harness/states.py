@@ -111,6 +111,8 @@ def state_git_check(ctx: Context) -> Transition:
 
     if git.is_clean:
         console.print("[green]✓[/green] working tree limpa")
+        if getattr(ctx, "spec_id", None):
+            return Transition(next_state="load_spec")
         return Transition(next_state="spec_generation")
 
     # tem mudanças — bloqueia com sugestão
@@ -125,6 +127,75 @@ def state_git_check(ctx: Context) -> Transition:
     )
     sys.exit(1)
 
+
+
+def state_load_spec(ctx: Context) -> Transition:
+    """Carrega spec de um arquivo MD e converte para JSON estruturado (Tiny Spec Driven Development)."""
+    console.print(f"[cyan]▸ load-spec[/cyan] [dim]({ctx.spec_id})[/dim]")
+    
+    spec_path = ctx.project_dir / ".harness" / "specs" / f"{ctx.spec_id}.md"
+    if not spec_path.exists():
+        if not ctx.spec_id.endswith(".md"):
+            spec_path = ctx.project_dir / ".harness" / "specs" / f"{ctx.spec_id}"
+        if not spec_path.exists():
+            console.print(f"[red]✗ spec não encontrada:[/red] {spec_path}")
+            sys.exit(1)
+        
+    content = spec_path.read_text()
+    
+    spec = {"title": ctx.spec_id, "summary": "", "dod": [], "out_of_scope": [], "notes": ""}
+    
+    current_section = "summary"
+    for line in content.splitlines():
+        clean_line = line.strip()
+        if not clean_line:
+            continue
+            
+        lower_line = clean_line.lower()
+        if lower_line.startswith("## dod") or lower_line.startswith("## definition of done"):
+            current_section = "dod"
+            continue
+        elif lower_line.startswith("## out of scope"):
+            current_section = "out_of_scope"
+            continue
+        elif lower_line.startswith("## notes") or lower_line.startswith("## notas"):
+            current_section = "notes"
+            continue
+            
+        if clean_line.startswith("# ") and current_section == "summary":
+            spec["title"] = clean_line[2:].strip()
+            continue
+            
+        if current_section == "summary":
+            if lower_line.startswith("**summary:**"):
+                clean_line = clean_line[12:].strip()
+            if clean_line:
+                spec["summary"] += clean_line + "\n"
+        elif current_section in ["dod", "out_of_scope"]:
+            if clean_line.startswith("- [ ] "):
+                spec[current_section].append(clean_line[6:].strip())
+            elif clean_line.startswith("- [x] ") or clean_line.startswith("- [X] "):
+                spec[current_section].append(clean_line[6:].strip())
+            elif clean_line.startswith("- "):
+                spec[current_section].append(clean_line[2:].strip())
+        elif current_section == "notes":
+            if isinstance(spec["notes"], str):
+                spec["notes"] += clean_line + "\n"
+            else:
+                spec["notes"] = clean_line + "\n"
+                
+    spec["summary"] = spec["summary"].strip()
+    
+    ctx.spec = spec
+    
+    out_json = ctx.run_dir / "spec.json"
+    out_json.write_text(json.dumps(spec, indent=2, ensure_ascii=False))
+    
+    # Copia o markdown original para a pasta da run também
+    (ctx.run_dir / "spec.md").write_text(content)
+    
+    console.print("[green]✓[/green] spec carregada")
+    return Transition(next_state="implementation")
 
 def state_spec_generation(ctx: Context) -> Transition:
     """Texto livre → spec estruturada."""
@@ -647,11 +718,20 @@ def state_log(ctx: Context) -> Transition:
     if eval_result.get("rejection_reason"):
         log += f"\n### Motivo de rejeição (última tentativa)\n{eval_result['rejection_reason']}\n"
 
+
     log_file = ctx.run_dir / "run-log.md"
     log_file.write_text(log)
     console.print(f"[green]✓[/green] log salvo em [dim]{log_file}[/dim]")
 
+    if getattr(ctx, "spec_id", None):
+        new_dir_name = f"{ctx.spec_id}-{verdict}-{ctx.run_dir.name}"
+        new_dir = ctx.run_dir.parent / new_dir_name
+        ctx.run_dir.rename(new_dir)
+        ctx.run_dir = new_dir
+        console.print(f"[green]✓[/green] run renomeada para [bold]{new_dir_name}[/bold]")
+
     return Transition(next_state="done")
+
 
 
 # ---------------------------------------------------------------------------
@@ -660,6 +740,7 @@ def state_log(ctx: Context) -> Transition:
 
 STATES: dict[str, StateFn] = {
     "git_check": state_git_check,
+    "load_spec": state_load_spec,
     "spec_generation": state_spec_generation,
     "spec_edit": state_spec_edit,
     "human_gate_spec": state_human_gate_spec,
