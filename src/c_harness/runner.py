@@ -245,48 +245,35 @@ def _spec_to_md(
 def _wizard_collect() -> tuple[str, str, list[str], list[str], str]:
     """Coleta campos da spec interativamente com suporte a undo."""
     console.print(
-        "\n[dim]  dica: deixe um campo vazio e pressione Enter para pular · 'u' em qualquer lista para desfazer o último item[/dim]\n"
+        "\n  [dim]listas: Enter vazio para terminar · 'u' + Enter para desfazer o último item[/dim]\n"
     )
 
-    title = console.input(
-        "[bold]título[/bold] [dim](curto, ex: 'Adicionar login OAuth')[/dim]: "
-    ).strip()
+    title = console.input("título (ex: Adicionar login OAuth): ").strip()
+    summary = console.input("summary (o que precisa ser feito, 2-3 frases): ").strip()
 
-    summary = console.input(
-        "[bold]summary[/bold] [dim](o que precisa ser feito, 2-3 frases)[/dim]: "
-    ).strip()
-
-    console.print(
-        "[bold]DoD[/bold] [dim](critérios de done — Enter em branco para terminar)[/dim]:"
-    )
+    console.print("DoD — critérios de done:")
     dod: list[str] = []
     while True:
-        item = console.input(f"  [dim]{len(dod) + 1}.[/dim] ").strip()
+        item = console.input(f"  {len(dod) + 1}. ").strip()
         if not item:
             break
         if item.lower() == "u" and dod:
-            removed = dod.pop()
-            console.print(f"  [dim]↩ removido: {removed}[/dim]")
+            console.print(f"  ↩ removido: {dod.pop()}")
         elif item.lower() != "u":
             dod.append(item)
 
-    console.print(
-        "[bold]out of scope[/bold] [dim](o que NÃO deve ser feito — Enter em branco para terminar)[/dim]:"
-    )
+    console.print("out of scope — o que NÃO deve ser feito:")
     out_of_scope: list[str] = []
     while True:
-        item = console.input(f"  [dim]{len(out_of_scope) + 1}.[/dim] ").strip()
+        item = console.input(f"  {len(out_of_scope) + 1}. ").strip()
         if not item:
             break
         if item.lower() == "u" and out_of_scope:
-            removed = out_of_scope.pop()
-            console.print(f"  [dim]↩ removido: {removed}[/dim]")
+            console.print(f"  ↩ removido: {out_of_scope.pop()}")
         elif item.lower() != "u":
             out_of_scope.append(item)
 
-    notes = console.input(
-        "[bold]notes[/bold] [dim](contexto extra, opcional)[/dim]: "
-    ).strip()
+    notes = console.input("notes (contexto extra, Enter para pular): ").strip()
 
     return title, summary, dod, out_of_scope, notes
 
@@ -315,12 +302,10 @@ def _run_new_spec(spec_id: str) -> None:
         "  [green]t[/green]  só template    [dim](abre arquivo em branco para editar)[/dim]"
     )
     console.print()
-    choice = console.input("[yellow]modo:[/yellow] ").strip().lower()
+    choice = console.input("[yellow]modo [a/m/t]:[/yellow] ").strip().lower()
 
     if choice in ("a", "ia", "ai"):
-        description = console.input(
-            "[bold]descreva a task[/bold] [dim](texto livre)[/dim]: "
-        ).strip()
+        description = console.input("descreva a task: ").strip()
         if not description:
             console.print("[dim]nenhuma descrição informada — abortando.[/dim]")
             return
@@ -388,9 +373,7 @@ Descreva o que precisa ser feito em 2-3 frases.
             console.print(f"    [dim]• {d}[/dim]")
     console.print(f"[dim]{'─' * 50}[/dim]\n")
 
-    confirm = (
-        console.input("[yellow]salvar spec?[/yellow] [dim][s/N][/dim] ").strip().lower()
-    )
+    confirm = console.input("salvar spec? [s/N]: ").strip().lower()
     if confirm not in ("s", "sim", "y", "yes"):
         console.print("[dim]abortado.[/dim]")
         return
@@ -495,21 +478,20 @@ def main() -> None:
         _run_setup()
         sys.exit(0)
 
-    if args and args[0] == "new":
-        if len(args) < 2:
-            console.print("[red]Uso:[/red] c-harness new <spec-id>")
-            sys.exit(1)
-        _run_new_spec(args[1])
-        sys.exit(0)
-
-    # Configura agente backend
-
+    # Configura agente backend (necessário antes de 'new' pois pode usar IA)
     agent = flags.get("agent", "claude")
     if agent not in ("claude", "cursor", "pi"):
         console.print(f"[red][erro][/red] agente desconhecido: '{agent}'")
         console.print("  use: --agent claude  |  --agent cursor  |  --agent pi")
         sys.exit(1)
     configure_agent(agent)
+
+    if args and args[0] == "new":
+        if len(args) < 2:
+            console.print("[red]Uso:[/red] c-harness new <spec-id>")
+            sys.exit(1)
+        _run_new_spec(args[1])
+        sys.exit(0)
 
     if not args:
         console.print("""
