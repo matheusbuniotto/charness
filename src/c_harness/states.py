@@ -477,6 +477,11 @@ def state_evaluation(ctx: Context) -> Transition:
     console.print(
         "[yellow]✗[/yellow] avaliação reprovada — voltando para implementação"
     )
+    if ctx.eval_result.get("rejection_reason"):
+        reason_lines = ctx.eval_result["rejection_reason"].strip().splitlines()
+        console.print("  [dim]Motivo da rejeição pelo LLM:[/dim]")
+        for line in reason_lines:
+            console.print(f"    [dim]{line}[/dim]")
     _print_eval_results(ctx.eval_result, only_failed=True)
     ctx.retries["implementation"] = retries + 1
     return Transition(
