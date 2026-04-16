@@ -36,7 +36,10 @@ class Config:
 
     # Model config: global default per backend, then per-state overrides
     models: dict[str, str] = field(default_factory=dict)
+    # state_models: overrides globais de estado (usados pelo ClaudeAgent)
     state_models: dict[str, str] = field(default_factory=dict)
+    # cursor_state_models: overrides de estado específicos para o CursorAgent
+    cursor_state_models: dict[str, str] = field(default_factory=dict)
 
     # NOVO: Per-state explicit skills (replaces global_skills whitelist)
     state_skills: dict[str, StateSkills] = field(default_factory=dict)
@@ -77,6 +80,12 @@ class Config:
             if isinstance(cfg, dict) and "model" in cfg:
                 state_models[state_name] = cfg["model"]
 
+        cursor_state_models = {}
+        cursor_states_cfg = agents_cfg.get("cursor", {}).get("states", {})
+        for state_name, cfg in cursor_states_cfg.items():
+            if isinstance(cfg, dict) and "model" in cfg:
+                cursor_state_models[state_name] = cfg["model"]
+
         # Parse NEW per-state skills config
         state_skills: dict[str, StateSkills] = {}
         skills_cfg = data.get("skills", {})
@@ -108,6 +117,7 @@ class Config:
             ),
             models=models,
             state_models=state_models,
+            cursor_state_models=cursor_state_models,
             state_skills=state_skills,
             read_excludes=harness.get("read_excludes", []),
             max_input_tokens=limits.get("max_input_tokens", 0),
