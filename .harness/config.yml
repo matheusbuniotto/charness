@@ -1,38 +1,81 @@
 # Configuração do c-harness
+# Documentação: c-harness setup --help
+
 harness:
-  # Diretório de skills (aplicadas por estado)
+  # Diretórios de configuração
   skills_dir: ".harness/skills"
-  
-  # Diretório de regras (aplicadas a todos os estados)
   rules_dir: ".harness/rules"
 
-  # Skills globais de ~/.claude/skills a injetar (descomente para filtrar)
-  # global_skills:
-  #   - "grug"
-  #   - "harness"
-  
-  # Comandos automatizados executados antes da avaliação LLM
-  # Se algum falhar, o pipeline volta imediatamente para a implementação
+  # Comandos automatizados (executados ANTES do human gate)
+  # Se falhar, volta para implementation automaticamente
   checks:
     commands:
-      # - "uv run ruff check ."
-      # - "uv run pytest"
-      
-  # Critérios de avaliação globais (aplicados pelo agente de evaluation)
+      # - "uv run ruff check src/"
+      # - "uv run pytest -x"
+
+  # Critérios de avaliação globais (aplicados em evaluation)
   evaluation:
     global_checks:
       - "Sem TODOs ou placeholders no código"
       - "Funções com responsabilidade única e clara"
       - "Sem código morto ou imports não utilizados"
       - "Nomes descritivos (variáveis, funções, arquivos)"
-  
-  # Rastreio de uso de tokens e contexto
+
+  # Exclusões de leitura de arquivo (glob patterns)
+  # O agente será instruído a NÃO ler estes paths
+  read_excludes:
+    - ".venv/**"
+    - "node_modules/**"
+    - "*.lock"
+    - "tests/fixtures/**"
+    - ".git/**"
+    - "__pycache__/**"
+
+  # Limites de orçamento (0 = ilimitado)
+  limits:
+    max_input_tokens: 500000      # Aborta se input + cache_read > 500K
+    max_cost_usd: 5.00            # Aborta se custo > $5
+
+  # Métricas
   metrics:
     save_tokens: true
     log_file: "metrics.json"
 
+# Skills por estado (NOVO: substitui global_skills)
+# Cada estado carrega APENAS o que está explicitamente listado
+skills:
+  spec_generation:
+    global: []           # nenhuma skill global
+    local: []            # nenhum arquivo local
+
+  spec_edit:
+    global: []
+    local: []
+
+  implementation:
+    global:
+      - "grug"          # Staff engineer mindset
+    local:
+      - "patterns.md"   # .harness/skills/patterns.md
+    rules:
+      - "standards.md"  # .harness/rules/standards.md
+
+  evaluation:
+    global:
+      - "strict-checks"
+    local: []
+    rules: []
+
+# Configuração de agentes
 agents:
   claude:
     model: "claude-3-5-sonnet-latest"
   pi:
     model: "default"
+
+  # Modelos por estado (opcional)
+  states:
+    implementation:
+      model: "claude-3-5-sonnet-latest"
+    evaluation:
+      model: "claude-3-5-sonnet-latest"

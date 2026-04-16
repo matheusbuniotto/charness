@@ -45,6 +45,22 @@ def _record_usage(metrics: RunMetrics, state: str, usage: TokenUsage) -> None:
     )
 
 
+def _check_budget(metrics: RunMetrics) -> None:
+    """Verifica limites de tokens/custo e aborta se necessário."""
+    from .config import check_limits
+
+    ok, msg = check_limits(
+        {
+            "total_input_tokens": metrics.total_input_tokens,
+            "total_cache_read_tokens": metrics.total_cache_read_tokens,
+            "total_cost_usd": metrics.total_cost_usd,
+        }
+    )
+    if not ok:
+        console.print(f"\n[red]❌ BUDGET EXCEEDED:[/red] {msg}")
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Prompts por estado
 # ---------------------------------------------------------------------------
@@ -84,9 +100,10 @@ Sua responsabilidade: implementar a task descrita em spec.json.
 Regras CRÍTICAS para economia de tokens:
 1. Leia SOMENTE os arquivos listados na spec em "## Arquivos Relevantes" (se houver)
 2. Se não houver lista de arquivos, use Glob/Grep para encontrar APENAS os 3-5 arquivos mais relevantes
-3. NÃO leia arquivos de teste, documentação, ou código não relacionado à task
-4. Implemente exatamente o que o DoD pede — nem mais, nem menos
-5. Ao terminar, escreva {impl_summary_path} listando o que foi feito e quais arquivos foram criados/modificados
+3. NUNCA leia: .venv/, node_modules/, *.lock, arquivos de teste/fixtures, ou logs
+4. Use Grep para verificar conteúdo antes de Read — não leia arquivos grandes só para "confirmar"
+5. Implemente exatamente o que o DoD pede — nem mais, nem menos
+6. Ao terminar, escreva {impl_summary_path} listando o que foi feito e quais arquivos foram criados/modificados
 
 O spec.json está em: {spec_path}"""
 
@@ -94,10 +111,15 @@ EVAL_PROMPT = """Você é um agente de avaliação de código.
 
 Sua responsabilidade: verificar se a implementação atende ao DoD e critérios globais.
 
+Regras para economia de tokens:
+1. Leia SOMENTE: spec.json, impl-summary.md, e arquivos explicitamente modificados
+2. NÃO leia: .venv/, node_modules/, testes (a menos que o DoD mencione), arquivos de configuração grandes
+3. Use Grep para verificar padrões em vez de ler arquivos inteiros
+
 Leia:
 1. {spec_path} — a spec com o DoD
 2. {impl_summary_path} — o que o agente de implementação fez
-3. Os arquivos listados no impl-summary como criados/modificados
+3. Os arquivos listados no impl-summary como criados/modificados (apenas os principais, máx 5)
 
 Avalie cada critério do DoD (pass/fail) e os critérios globais abaixo.
 
@@ -246,6 +268,7 @@ def state_spec_generation(ctx: Context) -> Transition:
     )
 
     _record_usage(ctx.metrics, "spec_generation", usage)
+    _check_budget(ctx.metrics)
     try:
         ctx.spec = json.loads(_extract_json(raw))
     except json.JSONDecodeError:
@@ -278,6 +301,7 @@ def state_spec_edit(ctx: Context) -> Transition:
     )
 
     _record_usage(ctx.metrics, "spec_edit", usage)
+    _check_budget(ctx.metrics)
     try:
         ctx.spec = json.loads(_extract_json(raw))
     except json.JSONDecodeError:
@@ -405,6 +429,7 @@ Contexto git:
     )
 
     _record_usage(ctx.metrics, "implementation", usage)
+    _check_budget(ctx.metrics)
     console.print("[green]✓[/green] implementação concluída")
     return Transition(next_state="automated_checks")
 
@@ -550,6 +575,7 @@ def state_evaluation(ctx: Context) -> Transition:
     )
 
     _record_usage(ctx.metrics, "evaluation", usage)
+    _check_budget(ctx.metrics)
     try:
         ctx.eval_result = json.loads(_extract_json(raw))
     except json.JSONDecodeError:

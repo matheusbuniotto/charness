@@ -449,23 +449,27 @@ def _run_setup() -> None:
 harness:
   # Diretório de skills (aplicadas por estado)
   skills_dir: ".harness/skills"
-  
+
   # Diretório de regras (aplicadas a todos os estados)
   rules_dir: ".harness/rules"
 
-  # Skills globais de ~/.claude/skills a injetar (descomente para filtrar)
-  # global_skills:
-  #   - "grug"
-  #   - "harness"
-  
-  # Comandos automatizados executados antes da avaliação LLM
-  # Se algum falhar, o pipeline volta imediatamente para a implementação
+  # Exclusões de leitura (glob patterns)
+  read_excludes:
+    - ".venv/**"
+    - "node_modules/**"
+
+  # Limites de orçamento (0 = ilimitado)
+  limits:
+    max_input_tokens: 500000
+    max_cost_usd: 5.00
+
+  # Comandos automatizados (executados ANTES do human gate)
   checks:
     commands:
-      # - "uv run ruff check ."
-      # - "uv run pytest"
-      
-  # Critérios de avaliação globais (aplicados pelo agente de evaluation)
+      # - "uv run ruff check src/"
+      # - "uv run pytest -x"
+
+  # Critérios de avaliação globais
   evaluation:
     global_checks:
       - "Sem TODOs ou placeholders no código"
