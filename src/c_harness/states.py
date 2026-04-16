@@ -298,11 +298,37 @@ def state_human_gate_spec(ctx: Context) -> Transition:
     console.print()
     resposta = (
         console.input(
-            "[yellow]aprovar spec?[/yellow] [dim][s=aprovar / e=editar / N=cancelar][/dim] "
+            "[yellow]aprovar spec?[/yellow] [dim][s=aprovar / e=editar / x=exportar / N=cancelar][/dim] "
         )
         .strip()
         .lower()
     )
+
+    if resposta in ("x", "exportar", "export"):
+        spec_id = console.input("[yellow]nome/id para salvar (ex: login):[/yellow] ").strip()
+        if not spec_id:
+            spec_id = "draft"
+        if not spec_id.startswith("spec-"):
+            spec_id = f"spec-{spec_id}"
+            
+        md_content = f"# {ctx.spec.get('title', spec_id)}\n\n**Summary:**\n{ctx.spec.get('summary', '')}\n\n## DoD\n"
+        for d in ctx.spec.get("dod", []):
+            md_content += f"- [ ] {d}\n"
+        
+        md_content += "\n## Out of Scope\n"
+        for o in ctx.spec.get("out_of_scope", []):
+            md_content += f"- {o}\n"
+            
+        notes = ctx.spec.get("notes")
+        md_content += f"\n## Notes\n{notes if notes else 'Nenhum contexto extra.'}\n"
+        
+        spec_path = ctx.project_dir / ".harness" / "specs" / f"{spec_id}.md"
+        spec_path.parent.mkdir(parents=True, exist_ok=True)
+        spec_path.write_text(md_content)
+        
+        console.print(f"[green]✓[/green] spec exportada para [bold]{spec_path}[/bold]")
+        console.print(f"  [dim]você pode rodá-la depois com: c-harness run {spec_id}[/dim]")
+        return Transition(next_state="done", reason="spec salva e execução encerrada")
 
     if resposta in ("e", "editar", "edit"):
         feedback = console.input(
