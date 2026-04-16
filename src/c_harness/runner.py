@@ -226,8 +226,73 @@ def _parse_args(args: list[str]) -> tuple[dict[str, str], list[str]]:
     return flags, positional
 
 
+def _spec_to_md(
+    spec_id: str,
+    title: str,
+    summary: str,
+    dod: list[str],
+    out_of_scope: list[str],
+    notes: str,
+) -> str:
+    lines = [f"# {title}\n", f"**Summary:** {summary}\n", "## DoD (Definition of Done)"]
+    lines += [f"- [ ] {d}" for d in dod] or ["- critério 1"]
+    lines += ["", "## Out of Scope"]
+    lines += [f"- {o}" for o in out_of_scope] or ["- nenhum"]
+    lines += ["", "## Notes", notes or "- contexto extra", ""]
+    return "\n".join(lines)
+
+
+def _wizard_collect() -> tuple[str, str, list[str], list[str], str]:
+    """Coleta campos da spec interativamente com suporte a undo."""
+    console.print(
+        "\n[dim]  dica: deixe um campo vazio e pressione Enter para pular · 'u' em qualquer lista para desfazer o último item[/dim]\n"
+    )
+
+    title = console.input(
+        "[bold]título[/bold] [dim](curto, ex: 'Adicionar login OAuth')[/dim]: "
+    ).strip()
+
+    summary = console.input(
+        "[bold]summary[/bold] [dim](o que precisa ser feito, 2-3 frases)[/dim]: "
+    ).strip()
+
+    console.print(
+        "[bold]DoD[/bold] [dim](critérios de done — Enter em branco para terminar)[/dim]:"
+    )
+    dod: list[str] = []
+    while True:
+        item = console.input(f"  [dim]{len(dod) + 1}.[/dim] ").strip()
+        if not item:
+            break
+        if item.lower() == "u" and dod:
+            removed = dod.pop()
+            console.print(f"  [dim]↩ removido: {removed}[/dim]")
+        elif item.lower() != "u":
+            dod.append(item)
+
+    console.print(
+        "[bold]out of scope[/bold] [dim](o que NÃO deve ser feito — Enter em branco para terminar)[/dim]:"
+    )
+    out_of_scope: list[str] = []
+    while True:
+        item = console.input(f"  [dim]{len(out_of_scope) + 1}.[/dim] ").strip()
+        if not item:
+            break
+        if item.lower() == "u" and out_of_scope:
+            removed = out_of_scope.pop()
+            console.print(f"  [dim]↩ removido: {removed}[/dim]")
+        elif item.lower() != "u":
+            out_of_scope.append(item)
+
+    notes = console.input(
+        "[bold]notes[/bold] [dim](contexto extra, opcional)[/dim]: "
+    ).strip()
+
+    return title, summary, dod, out_of_scope, notes
+
+
 def _run_new_spec(spec_id: str) -> None:
-    """Cria um template markdown para Spec Driven Development."""
+    """Cria uma nova spec — IA, wizard ou template."""
     if not spec_id.startswith("spec-"):
         spec_id = f"spec-{spec_id}"
 
@@ -239,7 +304,58 @@ def _run_new_spec(spec_id: str) -> None:
         console.print(f"[yellow]⚠ {spec_path} já existe.[/yellow]")
         return
 
-    template = f"""# {spec_id}
+    console.print(f"\n[bold]nova spec:[/bold] {spec_id}\n")
+    console.print(
+        "  [green]a[/green]  gerar com IA  [dim](descreva a task, o agente estrutura)[/dim]"
+    )
+    console.print(
+        "  [green]m[/green]  wizard manual  [dim](preencher campo a campo)[/dim]"
+    )
+    console.print(
+        "  [green]t[/green]  só template    [dim](abre arquivo em branco para editar)[/dim]"
+    )
+    console.print()
+    choice = console.input("[yellow]modo:[/yellow] ").strip().lower()
+
+    if choice in ("a", "ia", "ai"):
+        description = console.input(
+            "[bold]descreva a task[/bold] [dim](texto livre)[/dim]: "
+        ).strip()
+        if not description:
+            console.print("[dim]nenhuma descrição informada — abortando.[/dim]")
+            return
+
+        from .states import SPEC_PROMPT
+
+        raw, _ = run_agent(
+            prompt=f"Task: {description}",
+            system_prompt=SPEC_PROMPT,
+            cwd=specs_dir,
+            label="spec-new",
+            allowed_tools=None,
+            state="spec_generation",
+        )
+
+        try:
+            data = json.loads(_extract_json(raw))
+        except Exception:
+            console.print(f"[red]erro ao parsear spec gerada:[/red]\n{raw}")
+            return
+
+        title = data.get("title", spec_id)
+        summary = data.get("summary", "")
+        dod = data.get("dod", [])
+        out_of_scope = data.get("out_of_scope", [])
+        notes = data.get("notes") or ""
+
+    elif choice in ("m", "manual", "wizard"):
+        title, summary, dod, out_of_scope, notes = _wizard_collect()
+        if not title:
+            title = spec_id
+
+    else:
+        # template vazio
+        template = f"""# {spec_id}
 
 **Summary:** 
 Descreva o que precisa ser feito em 2-3 frases.
@@ -254,11 +370,34 @@ Descreva o que precisa ser feito em 2-3 frases.
 ## Notes
 - contexto extra
 """
-    spec_path.write_text(template)
-    console.print(f"[green]✓[/green] template criado em [bold]{spec_path}[/bold]")
-    console.print(
-        f"  [dim]edite o arquivo e depois execute: c-harness run {spec_id}[/dim]"
+        spec_path.write_text(template)
+        console.print(f"[green]✓[/green] template criado em [bold]{spec_path}[/bold]")
+        console.print(
+            f"  [dim]edite o arquivo e depois execute: c-harness run {spec_id}[/dim]"
+        )
+        return
+
+    md = _spec_to_md(spec_id, title, summary, dod, out_of_scope, notes)
+
+    console.print(f"\n[dim]{'─' * 50}[/dim]")
+    console.print(f"[bold]{title}[/bold]")
+    console.print(f"[dim]{summary}[/dim]")
+    if dod:
+        console.print(f"  DoD: {len(dod)} critérios")
+        for d in dod:
+            console.print(f"    [dim]• {d}[/dim]")
+    console.print(f"[dim]{'─' * 50}[/dim]\n")
+
+    confirm = (
+        console.input("[yellow]salvar spec?[/yellow] [dim][s/N][/dim] ").strip().lower()
     )
+    if confirm not in ("s", "sim", "y", "yes"):
+        console.print("[dim]abortado.[/dim]")
+        return
+
+    spec_path.write_text(md)
+    console.print(f"[green]✓[/green] spec salva em [bold]{spec_path}[/bold]")
+    console.print(f"  [dim]execute: c-harness run {spec_id}[/dim]")
 
 
 def _run_setup() -> None:
