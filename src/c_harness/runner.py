@@ -559,9 +559,23 @@ def main() -> None:
         sys.exit(1)
 
     project_dir = Path.cwd()
-    run_dir = (
-        project_dir / ".harness" / "runs" / datetime.now().strftime("%Y%m%d-%H%M%S")
-    )
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    # Derive a meaningful slug from the input so runs are findable by name.
+    json_file = _detect_json_file(args)
+    if args[0] == "run" and len(args) >= 2:
+        slug = args[1] if args[1].startswith("spec-") else f"spec-{args[1]}"
+    elif args[0] == "--edit" and len(args) >= 2:
+        slug = Path(args[1]).stem
+    elif json_file is not None:
+        slug = json_file.stem
+    else:
+        words = " ".join(args).split()
+        slug = (
+            "-".join(w.lower() for w in words[:4] if w.isalnum() or "-" in w) or "run"
+        )
+
+    run_dir = project_dir / ".harness" / "runs" / f"{slug}-{ts}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     console.print(f"\n[bold]c-harness[/bold] ({get_agent_backend()}) → ", end="")
@@ -586,7 +600,7 @@ def main() -> None:
 
     if args[0] == "--edit":
         _run_edit_spec(args, run_dir, project_dir)
-    elif json_file := _detect_json_file(args):
+    elif json_file is not None:
         _run_from_json(json_file, run_dir, project_dir)
     else:
         _run_free_text(args, run_dir, project_dir)

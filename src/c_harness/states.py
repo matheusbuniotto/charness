@@ -81,11 +81,12 @@ IMPL_PROMPT = """Você é um agente de implementação.
 
 Sua responsabilidade: implementar a task descrita em spec.json.
 
-Regras:
-- Leia spec.json antes de começar
-- Implemente exatamente o que o DoD pede — nem mais, nem menos
-- Ao terminar, escreva {impl_summary_path} listando o que foi feito e quais arquivos foram criados/modificados
-- Se encontrar algo ambíguo na spec, registre em impl-summary.md na seção "decisões tomadas"
+Regras CRÍTICAS para economia de tokens:
+1. Leia SOMENTE os arquivos listados na spec em "## Arquivos Relevantes" (se houver)
+2. Se não houver lista de arquivos, use Glob/Grep para encontrar APENAS os 3-5 arquivos mais relevantes
+3. NÃO leia arquivos de teste, documentação, ou código não relacionado à task
+4. Implemente exatamente o que o DoD pede — nem mais, nem menos
+5. Ao terminar, escreva {impl_summary_path} listando o que foi feito e quais arquivos foram criados/modificados
 
 O spec.json está em: {spec_path}"""
 
@@ -382,14 +383,13 @@ Critérios que falharam:
 {chr(10).join(f"- {c}" for c in ctx.eval_result.get("failed_criteria", []))}
 """
 
+    # Git context só em retries (quando precisamos de mais contexto sobre falhas anteriores)
     git_context = ""
-    if ctx.git:
+    if ctx.git and ctx.retries.get("implementation", 0) > 0:
         git_context = f"""
-Contexto git do projeto:
+Contexto git:
 - Branch: {ctx.git.branch}
-- Histórico recente:
-{ctx.git.log}
-"""
+- Últimos commits: {ctx.git.log.replace(chr(10), ", ")}"""
 
     raw, usage = run_agent(
         prompt=f"Implemente a task descrita em spec.json.{rejection_context}{git_context}",
@@ -406,13 +406,13 @@ Contexto git do projeto:
 
     _record_usage(ctx.metrics, "implementation", usage)
     console.print("[green]✓[/green] implementação concluída")
-    return Transition(next_state="human_gate_commit")
+    return Transition(next_state="automated_checks")
 
 
 def state_human_gate_commit(ctx: Context) -> Transition:
     """Human gate: revisar diff e decidir se commita antes da avaliação."""
     if ctx.git is None:
-        return Transition(next_state="automated_checks")
+        return Transition(next_state="evaluation")
 
     diff = _run_git(["diff", "--stat", "HEAD"], ctx.project_dir)
     new_files = _run_git(
@@ -423,7 +423,7 @@ def state_human_gate_commit(ctx: Context) -> Transition:
         console.print(
             "[dim]  nenhuma mudança detectada no git — pulando gate de commit[/dim]"
         )
-        return Transition(next_state="automated_checks")
+        return Transition(next_state="evaluation")
 
     console.print("\n[cyan]▸ human-gate: commit[/cyan]")
     if diff:
@@ -442,9 +442,7 @@ def state_human_gate_commit(ctx: Context) -> Transition:
     )
 
     if resposta not in ("s", "sim", "y", "yes"):
-        return Transition(
-            next_state="automated_checks", reason="commit pulado pelo usuário"
-        )
+        return Transition(next_state="evaluation", reason="commit pulado pelo usuário")
 
     # gera mensagem de commit baseada na spec
     title = ctx.spec.get("title", "implementação via c-harness")
@@ -465,13 +463,13 @@ def state_human_gate_commit(ctx: Context) -> Transition:
     else:
         console.print(f"[red]✗[/red] commit falhou:\n{result.stderr}")
 
-    return Transition(next_state="automated_checks")
+    return Transition(next_state="evaluation")
 
 
 def state_automated_checks(ctx: Context) -> Transition:
     """Executa comandos de check configurados antes da avaliação LLM."""
     if not config.checks_commands:
-        return Transition(next_state="evaluation")
+        return Transition(next_state="human_gate_commit")
 
     console.print("\n[cyan]▸ automated-checks[/cyan]")
 
@@ -521,7 +519,7 @@ def state_automated_checks(ctx: Context) -> Transition:
 
         console.print(f"  [green]✓ passou:[/green] {cmd}")
 
-    return Transition(next_state="evaluation")
+    return Transition(next_state="human_gate_commit")
 
 
 def state_evaluation(ctx: Context) -> Transition:
@@ -746,15 +744,6 @@ def state_log(ctx: Context) -> Transition:
     log_file = ctx.run_dir / "run-log.md"
     log_file.write_text(log)
     console.print(f"[green]✓[/green] log salvo em [dim]{log_file}[/dim]")
-
-    if getattr(ctx, "spec_id", None):
-        new_dir_name = f"{ctx.spec_id}-{verdict}-{ctx.run_dir.name}"
-        new_dir = ctx.run_dir.parent / new_dir_name
-        ctx.run_dir.rename(new_dir)
-        ctx.run_dir = new_dir
-        console.print(
-            f"[green]✓[/green] run renomeada para [bold]{new_dir_name}[/bold]"
-        )
 
     return Transition(next_state="done")
 

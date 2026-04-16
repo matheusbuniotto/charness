@@ -82,6 +82,10 @@ class Config:
 # Instância global carregada em tempo de inicialização
 config = Config.load(Path(".harness/config.yml"))
 
+# Cache de skills para evitar re-leitura de disco
+_skills_cache: dict[str, str] = {}
+_rules_cache: str | None = None
+
 
 def _load_claude_skills(base_dir: Path, allowed_skills: list[str]) -> list[str]:
     """Carrega skills da pasta .claude/skills (project ou geral)."""
@@ -109,12 +113,26 @@ def _load_claude_skills(base_dir: Path, allowed_skills: list[str]) -> list[str]:
 
 
 def load_skills(state_name: str = "") -> str:
-    """Carrega skills globais e específicas do estado."""
-    skills = []
+    """Carrega skills globais e específicas do estado (com cache)."""
+    global _skills_cache
+    cache_key = f"{state_name}:{','.join(sorted(config.global_skills))}"
+    if cache_key in _skills_cache:
+        return _skills_cache[cache_key]
 
+    skills = []
     general_claude_skills = Path.home() / ".claude" / "skills"
     project_claude_skills = Path.cwd() / ".claude" / "skills"
     allowed = config.global_skills
+
+    # Warn if loading ALL global skills (expensive)
+    if not allowed and general_claude_skills.exists():
+        import warnings
+
+        warnings.warn(
+            "global_skills não configurado — carregando TODAS as skills (~84K tokens). "
+            "Adicione 'global_skills:' em config.yml para filtrar.",
+            stacklevel=2,
+        )
 
     skills.extend(_load_claude_skills(general_claude_skills, allowed))
     if project_claude_skills != general_claude_skills:
@@ -138,15 +156,19 @@ def load_skills(state_name: str = "") -> str:
             _load_state_path(config.skills_dir / f"{state_name}.md")
             _load_state_path(config.skills_dir / state_name)
 
-    if not skills:
-        return ""
-
-    return "\n# SKILLS\n" + "\n".join(skills)
+    result = "\n# SKILLS\n" + "\n".join(skills) if skills else ""
+    _skills_cache[cache_key] = result
+    return result
 
 
 def load_rules() -> str:
-    """Carrega regras globais da pasta rules/."""
+    """Carrega regras globais da pasta rules/ (com cache)."""
+    global _rules_cache
+    if _rules_cache is not None:
+        return _rules_cache
+
     if not config.rules_dir.exists() or not config.rules_dir.is_dir():
+        _rules_cache = ""
         return ""
 
     rules = []
@@ -154,7 +176,6 @@ def load_rules() -> str:
         content = item.read_text().strip()
         rules.append(f"--- RULE: {item.stem} ---\n{content}\n")
 
-    if not rules:
-        return ""
-
-    return "\n# REGRAS DO PROJETO\n" + "\n".join(rules)
+    result = "\n# REGRAS DO PROJETO\n" + "\n".join(rules) if rules else ""
+    _rules_cache = result
+    return result

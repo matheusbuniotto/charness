@@ -38,7 +38,7 @@ def collect_git_context(project_dir: Path) -> GitContext | None:
         return None
 
     branch = _run_git(["branch", "--show-current"], project_dir) or "detached"
-    log = _run_git(["log", "--oneline", "-10"], project_dir)
+    log = _run_git(["log", "--oneline", "-3"], project_dir)
     status = _run_git(["status", "--porcelain"], project_dir)
     is_clean = not bool(status)
     dirty_summary = status if status else ""
