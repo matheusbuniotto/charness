@@ -150,7 +150,8 @@ def state_spec_generation(ctx: Context) -> Transition:
         "output_tokens": usage.output_tokens,
         "cache_creation": usage.cache_creation_tokens,
         "cache_read": usage.cache_read_tokens,
-        "cost_usd": usage.cost_usd
+        "cost_usd": usage.cost_usd,
+        "tool_calls": usage.tool_calls
     })
     try:
         ctx.spec = json.loads(_extract_json(raw))
@@ -194,7 +195,8 @@ def state_spec_edit(ctx: Context) -> Transition:
         "output_tokens": usage.output_tokens,
         "cache_creation": usage.cache_creation_tokens,
         "cache_read": usage.cache_read_tokens,
-        "cost_usd": usage.cost_usd
+        "cost_usd": usage.cost_usd,
+        "tool_calls": usage.tool_calls
     })
     try:
         ctx.spec = json.loads(_extract_json(raw))
@@ -299,7 +301,8 @@ Contexto git do projeto:
         "output_tokens": usage.output_tokens,
         "cache_creation": usage.cache_creation_tokens,
         "cache_read": usage.cache_read_tokens,
-        "cost_usd": usage.cost_usd
+        "cost_usd": usage.cost_usd,
+        "tool_calls": usage.tool_calls
     })
     console.print("[green]✓[/green] implementação concluída")
     return Transition(next_state="human_gate_commit")
@@ -447,7 +450,8 @@ def state_evaluation(ctx: Context) -> Transition:
         "output_tokens": usage.output_tokens,
         "cache_creation": usage.cache_creation_tokens,
         "cache_read": usage.cache_read_tokens,
-        "cost_usd": usage.cost_usd
+        "cost_usd": usage.cost_usd,
+        "tool_calls": usage.tool_calls
     })
     try:
         ctx.eval_result = json.loads(_extract_json(raw))
@@ -564,6 +568,21 @@ def state_log(ctx: Context) -> Transition:
         for r in eval_result.get("global_results", [])
     )
 
+
+    history_lines = []
+    for step in ctx.metrics.steps:
+        state_name = step.get("state", "unknown")
+        tools = step.get("tool_calls", [])
+        history_lines.append(f"### {state_name}")
+        if tools:
+            for t in tools:
+                history_lines.append(f"- `{t}`")
+        else:
+            history_lines.append("*(Nenhuma ferramenta chamada)*")
+        history_lines.append("")
+    
+    history_text = "\n".join(history_lines)
+
     log = f"""# Run Log — {spec.get("title", "task")}
 
 **Data:** {now}
@@ -588,6 +607,10 @@ def state_log(ctx: Context) -> Transition:
 {chr(10).join(f"- {o}" for o in spec.get("out_of_scope", []))}
 
 ---
+
+## Histórico de Execução (Tools)
+
+{history_text}
 
 ## Avaliação
 

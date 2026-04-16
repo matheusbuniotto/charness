@@ -99,6 +99,7 @@ class ClaudeAgent:
                             msg = _format_tool_event(
                                 block.get("name", ""), block.get("input", {})
                             )
+                            usage.tool_calls.append(msg)
                             status.update(f"[dim]  {label}  {msg}[/dim]")
 
                 elif event_type == "result":

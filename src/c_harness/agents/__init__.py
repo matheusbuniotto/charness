@@ -1,6 +1,6 @@
 """Módulo de agents - interface base e factory."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
@@ -11,6 +11,7 @@ class TokenUsage:
     cache_creation_tokens: int = 0
     cache_read_tokens: int = 0
     cost_usd: float = 0.0
+    tool_calls: list[str] = field(default_factory=list)
 
 @runtime_checkable
 class Agent(Protocol):
