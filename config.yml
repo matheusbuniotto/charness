@@ -15,7 +15,17 @@ harness:
     log_file: "metrics.json"
 
 agents:
+  # Default model per backend
   claude:
-    model: "claude-3-5-sonnet-latest"
+    model: "claude-sonnet-4-5"
   pi:
     model: "default"
+
+  # Per-state model overrides (optional)
+  # states:
+  #   spec_generation:
+  #     model: "claude-haiku-3-5-latest"   # cheaper for spec drafting
+  #   implementation:
+  #     model: "claude-opus-4-5"            # best model for heavy lifting
+  #   evaluation:
+  #     model: "claude-sonnet-4-5"

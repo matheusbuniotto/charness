@@ -6,8 +6,10 @@ from pathlib import Path
 
 from rich.console import Console
 from . import TokenUsage
+from ..config import config
 
 console = Console()
+
 
 class PiAgent:
     name = "pi"
@@ -19,7 +21,9 @@ class PiAgent:
         cwd: Path,
         label: str,
         allowed_tools: list[str] | None = None,
+        state: str = "",
     ) -> tuple[str, TokenUsage]:
+        model = config.state_models.get(state) or config.models.get("pi")
         cmd = [
             "pi",
             "--print",
@@ -27,6 +31,8 @@ class PiAgent:
             "--system-prompt",
             system_prompt,
         ]
+        if model:
+            cmd += ["--model", model]
 
         if allowed_tools:
             tool_map = {
@@ -61,4 +67,4 @@ class PiAgent:
             console.print(f"[red][erro] pi falhou:[/red]\n{result.stderr}")
             sys.exit(1)
 
-        return result.stdout, TokenUsage() # pi currently does not output usage easily
+        return result.stdout, TokenUsage()  # pi currently does not output usage easily

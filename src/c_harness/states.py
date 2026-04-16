@@ -9,15 +9,41 @@ from rich.table import Table
 
 from .git import _run_git, collect_git_context
 from .config import load_skills, load_rules, config
+from .agents import TokenUsage
 from .runner import (
     MAX_RETRIES,
     Context,
+    RunMetrics,
     StateFn,
     Transition,
     _extract_json,
     console,
     run_agent,
 )
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _record_usage(metrics: RunMetrics, state: str, usage: TokenUsage) -> None:
+    metrics.total_input_tokens += usage.input_tokens
+    metrics.total_output_tokens += usage.output_tokens
+    metrics.total_cache_creation_tokens += usage.cache_creation_tokens
+    metrics.total_cache_read_tokens += usage.cache_read_tokens
+    metrics.total_cost_usd += usage.cost_usd
+    metrics.steps.append(
+        {
+            "state": state,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_creation": usage.cache_creation_tokens,
+            "cache_read": usage.cache_read_tokens,
+            "cost_usd": usage.cost_usd,
+            "tool_calls": usage.tool_calls,
+        }
+    )
+
 
 # ---------------------------------------------------------------------------
 # Prompts por estado
@@ -58,7 +84,7 @@ Sua responsabilidade: implementar a task descrita em spec.json.
 Regras:
 - Leia spec.json antes de começar
 - Implemente exatamente o que o DoD pede — nem mais, nem menos
-- Ao terminar, escreva impl-summary.md listando o que foi feito e quais arquivos foram criados/modificados
+- Ao terminar, escreva {impl_summary_path} listando o que foi feito e quais arquivos foram criados/modificados
 - Se encontrar algo ambíguo na spec, registre em impl-summary.md na seção "decisões tomadas"
 
 O spec.json está em: {spec_path}"""
@@ -128,31 +154,38 @@ def state_git_check(ctx: Context) -> Transition:
     sys.exit(1)
 
 
-
 def state_load_spec(ctx: Context) -> Transition:
     """Carrega spec de um arquivo MD e converte para JSON estruturado (Tiny Spec Driven Development)."""
     console.print(f"[cyan]▸ load-spec[/cyan] [dim]({ctx.spec_id})[/dim]")
-    
+
     spec_path = ctx.project_dir / ".harness" / "specs" / f"{ctx.spec_id}.md"
     if not spec_path.exists():
-        if not ctx.spec_id.endswith(".md"):
+        if ctx.spec_id and not ctx.spec_id.endswith(".md"):
             spec_path = ctx.project_dir / ".harness" / "specs" / f"{ctx.spec_id}"
         if not spec_path.exists():
             console.print(f"[red]✗ spec não encontrada:[/red] {spec_path}")
             sys.exit(1)
-        
+
     content = spec_path.read_text()
-    
-    spec = {"title": ctx.spec_id, "summary": "", "dod": [], "out_of_scope": [], "notes": ""}
-    
+
+    spec = {
+        "title": ctx.spec_id,
+        "summary": "",
+        "dod": [],
+        "out_of_scope": [],
+        "notes": "",
+    }
+
     current_section = "summary"
     for line in content.splitlines():
         clean_line = line.strip()
         if not clean_line:
             continue
-            
+
         lower_line = clean_line.lower()
-        if lower_line.startswith("## dod") or lower_line.startswith("## definition of done"):
+        if lower_line.startswith("## dod") or lower_line.startswith(
+            "## definition of done"
+        ):
             current_section = "dod"
             continue
         elif lower_line.startswith("## out of scope"):
@@ -161,11 +194,11 @@ def state_load_spec(ctx: Context) -> Transition:
         elif lower_line.startswith("## notes") or lower_line.startswith("## notas"):
             current_section = "notes"
             continue
-            
+
         if clean_line.startswith("# ") and current_section == "summary":
             spec["title"] = clean_line[2:].strip()
             continue
-            
+
         if current_section == "summary":
             if lower_line.startswith("**summary:**"):
                 clean_line = clean_line[12:].strip()
@@ -183,19 +216,20 @@ def state_load_spec(ctx: Context) -> Transition:
                 spec["notes"] += clean_line + "\n"
             else:
                 spec["notes"] = clean_line + "\n"
-                
+
     spec["summary"] = spec["summary"].strip()
-    
+
     ctx.spec = spec
-    
+
     out_json = ctx.run_dir / "spec.json"
     out_json.write_text(json.dumps(spec, indent=2, ensure_ascii=False))
-    
+
     # Copia o markdown original para a pasta da run também
     (ctx.run_dir / "spec.md").write_text(content)
-    
+
     console.print("[green]✓[/green] spec carregada")
     return Transition(next_state="implementation")
+
 
 def state_spec_generation(ctx: Context) -> Transition:
     """Texto livre → spec estruturada."""
@@ -203,27 +237,14 @@ def state_spec_generation(ctx: Context) -> Transition:
 
     raw, usage = run_agent(
         prompt=f"Task: {ctx.task_text}",
-        system_prompt=SPEC_PROMPT + load_rules() + load_skills('spec_generation'),
+        system_prompt=SPEC_PROMPT + load_rules() + load_skills("spec_generation"),
         cwd=ctx.run_dir,
         label="spec",
         allowed_tools=None,  # spec agent não precisa de tools
+        state="spec_generation",
     )
 
-    
-    ctx.metrics.total_input_tokens += usage.input_tokens
-    ctx.metrics.total_output_tokens += usage.output_tokens
-    ctx.metrics.total_cache_creation_tokens += usage.cache_creation_tokens
-    ctx.metrics.total_cache_read_tokens += usage.cache_read_tokens
-    ctx.metrics.total_cost_usd += usage.cost_usd
-    ctx.metrics.steps.append({
-        "state": "spec_generation",
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
-        "cache_creation": usage.cache_creation_tokens,
-        "cache_read": usage.cache_read_tokens,
-        "cost_usd": usage.cost_usd,
-        "tool_calls": usage.tool_calls
-    })
+    _record_usage(ctx.metrics, "spec_generation", usage)
     try:
         ctx.spec = json.loads(_extract_json(raw))
     except json.JSONDecodeError:
@@ -242,33 +263,20 @@ def state_spec_edit(ctx: Context) -> Transition:
     console.print("[cyan]▸ spec-edit[/cyan]")
 
     current_spec_json = json.dumps(ctx.spec, indent=2, ensure_ascii=False)
-    feedback = ctx.spec_edit_feedback  # type: ignore[attr-defined]
+    feedback = ctx.spec_edit_feedback
 
     prompt = f"Spec atual:\n{current_spec_json}\n\nInstruções de edição:\n{feedback}"
 
     raw, usage = run_agent(
         prompt=prompt,
-        system_prompt=SPEC_EDIT_PROMPT + load_rules() + load_skills('spec_edit'),
+        system_prompt=SPEC_EDIT_PROMPT + load_rules() + load_skills("spec_edit"),
         cwd=ctx.run_dir,
         label="spec-edit",
         allowed_tools=None,
+        state="spec_edit",
     )
 
-    
-    ctx.metrics.total_input_tokens += usage.input_tokens
-    ctx.metrics.total_output_tokens += usage.output_tokens
-    ctx.metrics.total_cache_creation_tokens += usage.cache_creation_tokens
-    ctx.metrics.total_cache_read_tokens += usage.cache_read_tokens
-    ctx.metrics.total_cost_usd += usage.cost_usd
-    ctx.metrics.steps.append({
-        "state": "spec_edit",
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
-        "cache_creation": usage.cache_creation_tokens,
-        "cache_read": usage.cache_read_tokens,
-        "cost_usd": usage.cost_usd,
-        "tool_calls": usage.tool_calls
-    })
+    _record_usage(ctx.metrics, "spec_edit", usage)
     try:
         ctx.spec = json.loads(_extract_json(raw))
     except json.JSONDecodeError:
@@ -305,29 +313,33 @@ def state_human_gate_spec(ctx: Context) -> Transition:
     )
 
     if resposta in ("x", "exportar", "export"):
-        spec_id = console.input("[yellow]nome/id para salvar (ex: login):[/yellow] ").strip()
+        spec_id = console.input(
+            "[yellow]nome/id para salvar (ex: login):[/yellow] "
+        ).strip()
         if not spec_id:
             spec_id = "draft"
         if not spec_id.startswith("spec-"):
             spec_id = f"spec-{spec_id}"
-            
+
         md_content = f"# {ctx.spec.get('title', spec_id)}\n\n**Summary:**\n{ctx.spec.get('summary', '')}\n\n## DoD\n"
         for d in ctx.spec.get("dod", []):
             md_content += f"- [ ] {d}\n"
-        
+
         md_content += "\n## Out of Scope\n"
         for o in ctx.spec.get("out_of_scope", []):
             md_content += f"- {o}\n"
-            
+
         notes = ctx.spec.get("notes")
         md_content += f"\n## Notes\n{notes if notes else 'Nenhum contexto extra.'}\n"
-        
+
         spec_path = ctx.project_dir / ".harness" / "specs" / f"{spec_id}.md"
         spec_path.parent.mkdir(parents=True, exist_ok=True)
         spec_path.write_text(md_content)
-        
+
         console.print(f"[green]✓[/green] spec exportada para [bold]{spec_path}[/bold]")
-        console.print(f"  [dim]você pode rodá-la depois com: c-harness run {spec_id}[/dim]")
+        console.print(
+            f"  [dim]você pode rodá-la depois com: c-harness run {spec_id}[/dim]"
+        )
         return Transition(next_state="done", reason="spec salva e execução encerrada")
 
     if resposta in ("e", "editar", "edit"):
@@ -339,7 +351,7 @@ def state_human_gate_spec(ctx: Context) -> Transition:
                 "[dim]nenhuma alteração informada — mantendo spec atual.[/dim]"
             )
             return Transition(next_state="human_gate_spec")
-        ctx.spec_edit_feedback = feedback  # type: ignore[attr-defined]
+        ctx.spec_edit_feedback = feedback
         return Transition(next_state="spec_edit")
 
     if resposta not in ("s", "sim", "y", "yes"):
@@ -358,6 +370,7 @@ def state_implementation(ctx: Context) -> Transition:
     )
 
     spec_path = ctx.run_dir / "spec.json"
+    impl_summary_path = ctx.run_dir / "impl-summary.md"
     rejection_context = ""
 
     if ctx.eval_result.get("rejection_reason"):
@@ -380,27 +393,18 @@ Contexto git do projeto:
 
     raw, usage = run_agent(
         prompt=f"Implemente a task descrita em spec.json.{rejection_context}{git_context}",
-        system_prompt=IMPL_PROMPT.format(spec_path=spec_path) + load_rules() + load_skills('implementation'),
+        system_prompt=IMPL_PROMPT.format(
+            spec_path=spec_path, impl_summary_path=impl_summary_path
+        )
+        + load_rules()
+        + load_skills("implementation"),
         cwd=ctx.project_dir,
         label="impl",
         allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+        state="implementation",
     )
 
-    
-    ctx.metrics.total_input_tokens += usage.input_tokens
-    ctx.metrics.total_output_tokens += usage.output_tokens
-    ctx.metrics.total_cache_creation_tokens += usage.cache_creation_tokens
-    ctx.metrics.total_cache_read_tokens += usage.cache_read_tokens
-    ctx.metrics.total_cost_usd += usage.cost_usd
-    ctx.metrics.steps.append({
-        "state": "implementation",
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
-        "cache_creation": usage.cache_creation_tokens,
-        "cache_read": usage.cache_read_tokens,
-        "cost_usd": usage.cost_usd,
-        "tool_calls": usage.tool_calls
-    })
+    _record_usage(ctx.metrics, "implementation", usage)
     console.print("[green]✓[/green] implementação concluída")
     return Transition(next_state="human_gate_commit")
 
@@ -438,13 +442,15 @@ def state_human_gate_commit(ctx: Context) -> Transition:
     )
 
     if resposta not in ("s", "sim", "y", "yes"):
-        return Transition(next_state="automated_checks", reason="commit pulado pelo usuário")
+        return Transition(
+            next_state="automated_checks", reason="commit pulado pelo usuário"
+        )
 
     # gera mensagem de commit baseada na spec
     title = ctx.spec.get("title", "implementação via c-harness")
     commit_msg = f"feat: {title}\n\ngerado por c-harness · run {ctx.run_dir.name}"
 
-    _run_git(["add", "-A"], ctx.project_dir)
+    _run_git(["add", "-u"], ctx.project_dir)
     result = subprocess.run(
         ["git", "commit", "-m", commit_msg],
         capture_output=True,
@@ -462,61 +468,68 @@ def state_human_gate_commit(ctx: Context) -> Transition:
     return Transition(next_state="automated_checks")
 
 
-
 def state_automated_checks(ctx: Context) -> Transition:
     """Executa comandos de check configurados antes da avaliação LLM."""
     if not config.checks_commands:
         return Transition(next_state="evaluation")
-        
+
     console.print("\n[cyan]▸ automated-checks[/cyan]")
-    
+
     for cmd in config.checks_commands:
         console.print(f"  [dim]executando:[/dim] {cmd}")
-        
+
         result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            cwd=ctx.project_dir
+            cmd, shell=True, capture_output=True, text=True, cwd=ctx.project_dir
         )
-        
+
         if result.returncode != 0:
             console.print(f"  [red]✗ falhou:[/red] {cmd}")
             err_output = (result.stderr or result.stdout).strip()
             if err_output:
                 lines = err_output.splitlines()
-                console.print("\n".join(f"    [dim]{line}[/dim]" for line in lines[:10]))
+                console.print(
+                    "\n".join(f"    [dim]{line}[/dim]" for line in lines[:10])
+                )
                 if len(lines) > 10:
                     console.print("    [dim]... (truncado)[/dim]")
-            
-            console.print("[yellow]✗[/yellow] checks reprovados — voltando para implementação")
+
+            console.print(
+                "[yellow]✗[/yellow] checks reprovados — voltando para implementação"
+            )
             # Voltar para implementação com erro
             retries = ctx.retries.get("implementation", 0)
             if retries >= MAX_RETRIES:
-                console.print(f"[red]✗[/red] checks falharam após {MAX_RETRIES + 1} tentativas — escalando para humano")
+                console.print(
+                    f"[red]✗[/red] checks falharam após {MAX_RETRIES + 1} tentativas — escalando para humano"
+                )
                 ctx.eval_result = {
                     "rejection_reason": f"O check automatizado '{cmd}' falhou criticamente:\n{result.stderr or result.stdout}"
                 }
-                return Transition(next_state="human_gate_eval", reason="max retries atingido nos checks")
+                return Transition(
+                    next_state="human_gate_eval",
+                    reason="max retries atingido nos checks",
+                )
 
             ctx.retries["implementation"] = retries + 1
             ctx.eval_result = {
                 "rejection_reason": f"O comando de validação '{cmd}' falhou. Corrija o código para passar no check.\n\nOutput do erro:\n{result.stderr or result.stdout}",
-                "failed_criteria": [f"Check automatizado: {cmd}"]
+                "failed_criteria": [f"Check automatizado: {cmd}"],
             }
-            return Transition(next_state="implementation", reason=f"check falhou: {cmd}")
-            
+            return Transition(
+                next_state="implementation", reason=f"check falhou: {cmd}"
+            )
+
         console.print(f"  [green]✓ passou:[/green] {cmd}")
 
     return Transition(next_state="evaluation")
+
 
 def state_evaluation(ctx: Context) -> Transition:
     """Avalia implementação contra DoD + critérios globais."""
     console.print("[cyan]▸ evaluation[/cyan]")
 
     spec_path = ctx.run_dir / "spec.json"
-    impl_summary_path = ctx.project_dir / "impl-summary.md"
+    impl_summary_path = ctx.run_dir / "impl-summary.md"
 
     if not impl_summary_path.exists():
         console.print(
@@ -528,28 +541,17 @@ def state_evaluation(ctx: Context) -> Transition:
         system_prompt=EVAL_PROMPT.format(
             spec_path=spec_path,
             impl_summary_path=impl_summary_path,
-            global_checks_list="\n".join(f"- {c}" for c in config.global_checks)
-        ) + load_rules() + load_skills('evaluation'),
+            global_checks_list="\n".join(f"- {c}" for c in config.global_checks),
+        )
+        + load_rules()
+        + load_skills("evaluation"),
         cwd=ctx.project_dir,
         label="eval",
         allowed_tools=["Read", "Glob", "Grep"],
+        state="evaluation",
     )
 
-    
-    ctx.metrics.total_input_tokens += usage.input_tokens
-    ctx.metrics.total_output_tokens += usage.output_tokens
-    ctx.metrics.total_cache_creation_tokens += usage.cache_creation_tokens
-    ctx.metrics.total_cache_read_tokens += usage.cache_read_tokens
-    ctx.metrics.total_cost_usd += usage.cost_usd
-    ctx.metrics.steps.append({
-        "state": "evaluation",
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
-        "cache_creation": usage.cache_creation_tokens,
-        "cache_read": usage.cache_read_tokens,
-        "cost_usd": usage.cost_usd,
-        "tool_calls": usage.tool_calls
-    })
+    _record_usage(ctx.metrics, "evaluation", usage)
     try:
         ctx.eval_result = json.loads(_extract_json(raw))
     except json.JSONDecodeError:
@@ -665,7 +667,6 @@ def state_log(ctx: Context) -> Transition:
         for r in eval_result.get("global_results", [])
     )
 
-
     history_lines = []
     for step in ctx.metrics.steps:
         state_name = step.get("state", "unknown")
@@ -677,7 +678,7 @@ def state_log(ctx: Context) -> Transition:
         else:
             history_lines.append("*(Nenhuma ferramenta chamada)*")
         history_lines.append("")
-    
+
     history_text = "\n".join(history_lines)
 
     log = f"""# Run Log — {spec.get("title", "task")}
@@ -718,7 +719,6 @@ def state_log(ctx: Context) -> Transition:
 {global_lines}
 """
 
-
     if ctx.metrics.total_input_tokens > 0 or ctx.metrics.total_output_tokens > 0:
         log += "\n## Uso de Tokens\n"
         log += f"- **Input Tokens:** {ctx.metrics.total_input_tokens}\n"
@@ -726,7 +726,7 @@ def state_log(ctx: Context) -> Transition:
         log += f"- **Cache Read:** {ctx.metrics.total_cache_read_tokens}\n"
         log += f"- **Cache Creation:** {ctx.metrics.total_cache_creation_tokens}\n"
         log += f"- **Custo Total:** ${ctx.metrics.total_cost_usd:.4f}\n"
-        
+
         # Save metrics JSON
         metrics_file = ctx.run_dir / "metrics.json"
         metrics_data = {
@@ -735,15 +735,13 @@ def state_log(ctx: Context) -> Transition:
             "total_cache_creation_tokens": ctx.metrics.total_cache_creation_tokens,
             "total_cache_read_tokens": ctx.metrics.total_cache_read_tokens,
             "total_cost_usd": ctx.metrics.total_cost_usd,
-            "steps": ctx.metrics.steps
+            "steps": ctx.metrics.steps,
         }
-        import json
         metrics_file.write_text(json.dumps(metrics_data, indent=2))
         console.print(f"[green]✓[/green] métricas salvas em [dim]{metrics_file}[/dim]")
 
     if eval_result.get("rejection_reason"):
         log += f"\n### Motivo de rejeição (última tentativa)\n{eval_result['rejection_reason']}\n"
-
 
     log_file = ctx.run_dir / "run-log.md"
     log_file.write_text(log)
@@ -754,10 +752,11 @@ def state_log(ctx: Context) -> Transition:
         new_dir = ctx.run_dir.parent / new_dir_name
         ctx.run_dir.rename(new_dir)
         ctx.run_dir = new_dir
-        console.print(f"[green]✓[/green] run renomeada para [bold]{new_dir_name}[/bold]")
+        console.print(
+            f"[green]✓[/green] run renomeada para [bold]{new_dir_name}[/bold]"
+        )
 
     return Transition(next_state="done")
-
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,7 @@ class RunMetrics:
     total_cost_usd: float = 0.0
     steps: list[dict] = field(default_factory=list)
 
+
 @dataclass
 class Context:
     """Estado compartilhado entre estados da run."""
@@ -48,6 +49,7 @@ class Context:
     git: GitContext | None = None
     metrics: RunMetrics = field(default_factory=RunMetrics)
     spec_id: str | None = None
+    spec_edit_feedback: str = ""
 
 
 @dataclass
@@ -99,6 +101,7 @@ def run_agent(
     cwd: Path,
     label: str = "",
     allowed_tools: list[str] | None = None,
+    state: str = "",
 ) -> tuple[str, TokenUsage]:
     """Executa o agente configurado (claude ou pi).
 
@@ -109,7 +112,7 @@ def run_agent(
     """
     if _agent_instance is None:
         raise RuntimeError("agente não configurado — chame configure_agent() primeiro")
-    return _agent_instance.run(prompt, system_prompt, cwd, label, allowed_tools)
+    return _agent_instance.run(prompt, system_prompt, cwd, label, allowed_tools, state)
 
 
 def configure_agent(backend: Literal["claude", "cursor", "pi"]) -> None:
@@ -183,17 +186,13 @@ def validate_spec(data: dict) -> list[str]:
     return errors
 
 
-def _detect_input_mode(args: list[str]) -> tuple[str, str | None]:
-    """Detecta o modo de entrada a partir dos argumentos.
-
-    Returns:
-        Tupla (modo, caminho_ou_none) onde modo é 'free_text', 'local_spec' ou 'resume'.
-    """
+def _detect_json_file(args: list[str]) -> Path | None:
+    """Retorna o arquivo JSON se o único argumento for um .json existente, senão None."""
     if len(args) == 1:
         candidate = Path(args[0])
         if candidate.suffix == ".json" and candidate.exists():
-            return "json_file", str(candidate)
-    return "free_text", None
+            return candidate
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -227,21 +226,19 @@ def _parse_args(args: list[str]) -> tuple[dict[str, str], list[str]]:
     return flags, positional
 
 
-
-
 def _run_new_spec(spec_id: str) -> None:
     """Cria um template markdown para Spec Driven Development."""
     if not spec_id.startswith("spec-"):
         spec_id = f"spec-{spec_id}"
-        
+
     specs_dir = Path(".harness/specs")
     specs_dir.mkdir(parents=True, exist_ok=True)
-    
+
     spec_path = specs_dir / f"{spec_id}.md"
     if spec_path.exists():
         console.print(f"[yellow]⚠ {spec_path} já existe.[/yellow]")
         return
-        
+
     template = f"""# {spec_id}
 
 **Summary:** 
@@ -259,7 +256,10 @@ Descreva o que precisa ser feito em 2-3 frases.
 """
     spec_path.write_text(template)
     console.print(f"[green]✓[/green] template criado em [bold]{spec_path}[/bold]")
-    console.print(f"  [dim]edite o arquivo e depois execute: c-harness run {spec_id}[/dim]")
+    console.print(
+        f"  [dim]edite o arquivo e depois execute: c-harness run {spec_id}[/dim]"
+    )
+
 
 def _run_setup() -> None:
     """Configura o c-harness no projeto atual."""
@@ -268,9 +268,9 @@ def _run_setup() -> None:
     config_file = harness_dir / "config.yml"
     skills_dir = harness_dir / "skills"
     rules_dir = harness_dir / "rules"
-    
+
     console.print("\n[bold cyan]c-harness setup[/bold cyan]\n")
-    
+
     if config_file.exists():
         console.print(f"[yellow]⚠ {config_file} já existe. Pulando criação.[/yellow]")
     else:
@@ -315,15 +315,19 @@ agents:
 """
         config_file.write_text(config_content)
         console.print(f"[green]✓[/green] criado {config_file}")
-        
+
     if not skills_dir.exists():
         skills_dir.mkdir(parents=True)
         console.print(f"[green]✓[/green] criado diretório {skills_dir}/")
-        
+
         eval_dir = skills_dir / "evaluation"
         eval_dir.mkdir()
-        (eval_dir / "strict-checks.md").write_text("# Avaliação Estrita\n- Verifique nomenclatura clara.\n- Aponte falhas se a complexidade for alta e não houver testes.\n")
-        (skills_dir / "implementation.md").write_text("# Regras de Implementação\n- Escreva código limpo e siga o style guide do projeto.\n")
+        (eval_dir / "strict-checks.md").write_text(
+            "# Avaliação Estrita\n- Verifique nomenclatura clara.\n- Aponte falhas se a complexidade for alta e não houver testes.\n"
+        )
+        (skills_dir / "implementation.md").write_text(
+            "# Regras de Implementação\n- Escreva código limpo e siga o style guide do projeto.\n"
+        )
         console.print(f"  [dim]↳ adicionados templates em {skills_dir}/[/dim]")
     else:
         console.print(f"[yellow]⚠ {skills_dir}/ já existe.[/yellow]")
@@ -331,19 +335,22 @@ agents:
     if not rules_dir.exists():
         rules_dir.mkdir(parents=True)
         console.print(f"[green]✓[/green] criado diretório {rules_dir}/")
-        (rules_dir / "project-rules.md").write_text("# Regras do Projeto\n- Respeite o style guide.\n- Priorize simplicidade.\n")
+        (rules_dir / "project-rules.md").write_text(
+            "# Regras do Projeto\n- Respeite o style guide.\n- Priorize simplicidade.\n"
+        )
         console.print(f"  [dim]↳ adicionado template em {rules_dir}/[/dim]")
     else:
         console.print(f"[yellow]⚠ {rules_dir}/ já existe.[/yellow]")
-        
-    console.print("\n[bold green]Setup concluído![/bold green] Você já pode usar o c-harness neste projeto.\n")
+
+    console.print(
+        "\n[bold green]Setup concluído![/bold green] Você já pode usar o c-harness neste projeto.\n"
+    )
+
 
 def main() -> None:
-
     """Entrypoint do c-harness."""
     raw_args = sys.argv[1:]
     flags, args = _parse_args(raw_args)
-
 
     if args and args[0] == "setup":
         _run_setup()
@@ -366,22 +373,19 @@ def main() -> None:
     configure_agent(agent)
 
     if not args:
-        console.print("[yellow]uso:[/yellow] c-harness '<descrição da task>'")
-        console.print(
-            "       c-harness setup                        [dim]# configura o projeto atual[/dim]"
-        )
-        console.print(
-            "       c-harness <caminho/para/spec.json>     [dim]# spec local[/dim]"
-        )
-        console.print(
-            "       c-harness <caminho/para/resume.json>   [dim]# retomada[/dim]"
-        )
-        console.print("       c-harness --edit <caminho/para/spec.json>")
-        console.print("")
-        console.print("[dim]flags:[/dim]")
-        console.print(
-            "       --agent claude|pi    [dim]# seleciona o agente (padrão: claude)[/dim]"
-        )
+        console.print("""
+[bold]uso:[/bold]
+  [cyan]c-harness[/cyan] [green]setup[/green]                     [dim]inicializa .harness/ no projeto atual[/dim]
+  [cyan]c-harness[/cyan] [green]new[/green] [yellow]<id>[/yellow]                  [dim]cria template de spec em .harness/specs/[/dim]
+  [cyan]c-harness[/cyan] [green]run[/green] [yellow]<id>[/yellow]                  [dim]executa pipeline com spec existente[/dim]
+  [cyan]c-harness[/cyan] [green]'<texto>'[/green]                 [dim]texto livre → gera spec e executa[/dim]
+  [cyan]c-harness[/cyan] [green]--edit[/green] [yellow]<spec.json>[/yellow]        [dim]edita spec JSON via agente[/dim]
+  [cyan]c-harness[/cyan] [green]<spec.json>[/green]               [dim]executa a partir de spec JSON local[/dim]
+  [cyan]c-harness[/cyan] [green]<resume.json>[/green]             [dim]retoma run pausada a partir de ponto salvo[/dim]
+
+[bold]flags:[/bold]
+  [cyan]--agent[/cyan] [yellow]claude|pi|cursor[/yellow]    [dim]seleciona o backend de agente (padrão: claude)[/dim]
+""")
         sys.exit(1)
 
     project_dir = Path.cwd()
@@ -394,7 +398,6 @@ def main() -> None:
     console.print(str(run_dir.relative_to(project_dir)), style="dim")
     console.print()
 
-
     if args[0] == "run":
         if len(args) < 2:
             console.print("[red]Uso:[/red] c-harness run <spec-id>")
@@ -402,155 +405,137 @@ def main() -> None:
         spec_id = args[1]
         if not spec_id.startswith("spec-"):
             spec_id = f"spec-{spec_id}"
-            
+
         ctx = Context(
-            task_text="",
-            run_dir=run_dir,
-            project_dir=project_dir,
-            metrics=RunMetrics()
+            task_text="", run_dir=run_dir, project_dir=project_dir, metrics=RunMetrics()
         )
         ctx.spec_id = spec_id
         console.print(f"[bold]modo:[/bold] spec-driven → {spec_id}")
         run_pipeline(ctx)
         sys.exit(0)
 
-    # Modo de edição de spec existente: --edit <spec-path>
     if args[0] == "--edit":
-        if len(args) < 2:
-            console.print("[red][erro][/red] --edit requer o caminho para um spec.json")
-            sys.exit(1)
-
-        spec_path = Path(args[1])
-        if not spec_path.exists():
-            console.print(f"[red][erro][/red] spec não encontrada: {spec_path}")
-            sys.exit(1)
-
-        try:
-            spec_data = json.loads(spec_path.read_text())
-        except json.JSONDecodeError as exc:
-            console.print(f"[red][erro][/red] JSON inválido em {spec_path}: {exc}")
-            sys.exit(1)
-
-        # Copia a spec original para o run_dir como ponto de partida
-        (run_dir / "spec.json").write_text(
-            json.dumps(spec_data, indent=2, ensure_ascii=False)
-        )
-
-        ctx = Context(
-            task_text=spec_data.get("summary", ""),
-            run_dir=run_dir,
-            project_dir=project_dir,
-            spec=spec_data,
-        )
-
-        run_pipeline(ctx, start_state="human_gate_spec")
-
+        _run_edit_spec(args, run_dir, project_dir)
+    elif json_file := _detect_json_file(args):
+        _run_from_json(json_file, run_dir, project_dir)
     else:
-        mode, json_path = _detect_input_mode(args)
-
-        if mode == "json_file":
-            json_file = Path(json_path)  # type: ignore[arg-type]
-            try:
-                data = json.loads(json_file.read_text())
-            except json.JSONDecodeError as exc:
-                console.print(f"[red][erro][/red] JSON inválido em {json_file}: {exc}")
-                sys.exit(1)
-
-            if "resume_from" in data:
-                # --- Modo retomada ---
-                resume = data["resume_from"]
-                resume_state = resume.get("state", "implementation")
-                resume_spec = resume.get("spec")
-                resume_retries = resume.get("retries", {})
-                resume_eval = resume.get("eval_result", {})
-                original_run_dir = resume.get("run_dir")
-
-                # Valida campos mínimos do resume
-                resume_errors = []
-                if not resume_spec:
-                    resume_errors.append(
-                        "campo 'spec' ausente ou vazio em 'resume_from'"
-                    )
-                if resume_state not in (
-                    "git_check",
-                    "spec_generation",
-                    "spec_edit",
-                    "human_gate_spec",
-                    "implementation",
-                    "human_gate_commit",
-                    "evaluation",
-                    "human_gate_eval",
-                    "log",
-                ):
-                    resume_errors.append(
-                        f"campo 'state' inválido em 'resume_from': '{resume_state}'"
-                    )
-                if resume_errors:
-                    console.print("[red][erro][/red] resume inválido:")
-                    for err in resume_errors:
-                        console.print(f"  [red]•[/red] {err}")
-                    sys.exit(1)
-
-                console.print(
-                    f"[bold]modo:[/bold] retomada → continuando de [cyan]{resume_state}[/cyan]"
-                )
-                if original_run_dir:
-                    console.print(f"  [dim]run original: {original_run_dir}[/dim]")
-
-                # Salva cópia da spec na nova run_dir
-                (run_dir / "spec.json").write_text(
-                    json.dumps(resume_spec, indent=2, ensure_ascii=False)
-                )
-
-                ctx = Context(
-                    task_text=resume_spec.get("summary", ""),
-                    run_dir=run_dir,
-                    project_dir=project_dir,
-                    spec=resume_spec,
-                    eval_result=resume_eval,
-                    retries=resume_retries,
-                )
-
-                run_pipeline(ctx, start_state=resume_state)
-
-            else:
-                # --- Modo spec local ---
-                errors = validate_spec(data)
-                if errors:
-                    console.print("[red][erro][/red] spec inválida:")
-                    for err in errors:
-                        console.print(f"  [red]•[/red] {err}")
-                    sys.exit(1)
-
-                console.print(f"[bold]modo:[/bold] spec local → [dim]{json_file}[/dim]")
-
-                # Salva cópia da spec na run_dir (sem re-estruturar)
-                (run_dir / "spec.json").write_text(
-                    json.dumps(data, indent=2, ensure_ascii=False)
-                )
-
-                ctx = Context(
-                    task_text=data.get("summary", ""),
-                    run_dir=run_dir,
-                    project_dir=project_dir,
-                    spec=data,
-                )
-
-                run_pipeline(ctx, start_state="human_gate_spec")
-
-        else:
-            # --- Modo texto livre ---
-            task_text = " ".join(args)
-            console.print("[bold]modo:[/bold] texto livre → gerando spec")
-
-            ctx = Context(
-                task_text=task_text,
-                run_dir=run_dir,
-                project_dir=project_dir,
-            )
-
-            run_pipeline(ctx)
+        _run_free_text(args, run_dir, project_dir)
 
     console.print(
         f"\n[bold green]✓ run concluída[/bold green] [dim]→ {run_dir.relative_to(project_dir)}[/dim]\n"
     )
+
+
+VALID_RESUME_STATES = frozenset(
+    {
+        "git_check",
+        "spec_generation",
+        "spec_edit",
+        "human_gate_spec",
+        "implementation",
+        "human_gate_commit",
+        "evaluation",
+        "human_gate_eval",
+        "log",
+    }
+)
+
+
+def _run_edit_spec(args: list[str], run_dir: Path, project_dir: Path) -> None:
+    if len(args) < 2:
+        console.print("[red][erro][/red] --edit requer o caminho para um spec.json")
+        sys.exit(1)
+    spec_path = Path(args[1])
+    if not spec_path.exists():
+        console.print(f"[red][erro][/red] spec não encontrada: {spec_path}")
+        sys.exit(1)
+    try:
+        spec_data = json.loads(spec_path.read_text())
+    except json.JSONDecodeError as exc:
+        console.print(f"[red][erro][/red] JSON inválido em {spec_path}: {exc}")
+        sys.exit(1)
+    (run_dir / "spec.json").write_text(
+        json.dumps(spec_data, indent=2, ensure_ascii=False)
+    )
+    ctx = Context(
+        task_text=spec_data.get("summary", ""),
+        run_dir=run_dir,
+        project_dir=project_dir,
+        spec=spec_data,
+    )
+    run_pipeline(ctx, start_state="human_gate_spec")
+
+
+def _run_from_json(json_file: Path, run_dir: Path, project_dir: Path) -> None:
+    try:
+        data = json.loads(json_file.read_text())
+    except json.JSONDecodeError as exc:
+        console.print(f"[red][erro][/red] JSON inválido em {json_file}: {exc}")
+        sys.exit(1)
+
+    if "resume_from" in data:
+        _run_resume(data["resume_from"], run_dir, project_dir)
+    else:
+        _run_local_spec(data, json_file, run_dir, project_dir)
+
+
+def _run_resume(resume: dict, run_dir: Path, project_dir: Path) -> None:
+    resume_state = resume.get("state", "implementation")
+    resume_spec: dict | None = resume.get("spec")
+    errors = []
+    if not resume_spec:
+        errors.append("campo 'spec' ausente ou vazio em 'resume_from'")
+    if resume_state not in VALID_RESUME_STATES:
+        errors.append(f"campo 'state' inválido em 'resume_from': '{resume_state}'")
+    if errors:
+        console.print("[red][erro][/red] resume inválido:")
+        for err in errors:
+            console.print(f"  [red]•[/red] {err}")
+        sys.exit(1)
+
+    assert resume_spec is not None  # validated above
+    console.print(
+        f"[bold]modo:[/bold] retomada → continuando de [cyan]{resume_state}[/cyan]"
+    )
+    if original_run_dir := resume.get("run_dir"):
+        console.print(f"  [dim]run original: {original_run_dir}[/dim]")
+
+    (run_dir / "spec.json").write_text(
+        json.dumps(resume_spec, indent=2, ensure_ascii=False)
+    )
+    ctx = Context(
+        task_text=resume_spec.get("summary", ""),
+        run_dir=run_dir,
+        project_dir=project_dir,
+        spec=resume_spec,
+        eval_result=resume.get("eval_result", {}),
+        retries=resume.get("retries", {}),
+    )
+    run_pipeline(ctx, start_state=resume_state)
+
+
+def _run_local_spec(
+    data: dict, json_file: Path, run_dir: Path, project_dir: Path
+) -> None:
+    errors = validate_spec(data)
+    if errors:
+        console.print("[red][erro][/red] spec inválida:")
+        for err in errors:
+            console.print(f"  [red]•[/red] {err}")
+        sys.exit(1)
+    console.print(f"[bold]modo:[/bold] spec local → [dim]{json_file}[/dim]")
+    (run_dir / "spec.json").write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    ctx = Context(
+        task_text=data.get("summary", ""),
+        run_dir=run_dir,
+        project_dir=project_dir,
+        spec=data,
+    )
+    run_pipeline(ctx, start_state="human_gate_spec")
+
+
+def _run_free_text(args: list[str], run_dir: Path, project_dir: Path) -> None:
+    task_text = " ".join(args)
+    console.print("[bold]modo:[/bold] texto livre → gerando spec")
+    ctx = Context(task_text=task_text, run_dir=run_dir, project_dir=project_dir)
+    run_pipeline(ctx)

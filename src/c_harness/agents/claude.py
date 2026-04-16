@@ -7,8 +7,10 @@ from pathlib import Path
 
 from rich.console import Console
 from . import TokenUsage
+from ..config import config
 
 console = Console()
+
 
 def _format_tool_event(tool_name: str, tool_input: dict) -> str:
     """Formata evento de tool use para exibição."""
@@ -25,6 +27,7 @@ def _format_tool_event(tool_name: str, tool_input: dict) -> str:
         return f"grep: {tool_input.get('pattern', '')}"
     return tool_name.lower()
 
+
 class ClaudeAgent:
     name = "claude"
 
@@ -35,7 +38,9 @@ class ClaudeAgent:
         cwd: Path,
         label: str,
         allowed_tools: list[str] | None = None,
+        state: str = "",
     ) -> tuple[str, TokenUsage]:
+        model = config.state_models.get(state) or config.models.get("claude")
         cmd = [
             "claude",
             "--print",
@@ -47,6 +52,8 @@ class ClaudeAgent:
             "--system-prompt",
             system_prompt,
         ]
+        if model:
+            cmd += ["--model", model]
 
         if allowed_tools:
             cmd += ["--allowedTools", ",".join(allowed_tools)]
@@ -107,7 +114,9 @@ class ClaudeAgent:
                     u = obj.get("usage", {})
                     usage.input_tokens = u.get("input_tokens", 0)
                     usage.output_tokens = u.get("output_tokens", 0)
-                    usage.cache_creation_tokens = u.get("cache_creation_input_tokens", 0)
+                    usage.cache_creation_tokens = u.get(
+                        "cache_creation_input_tokens", 0
+                    )
                     usage.cache_read_tokens = u.get("cache_read_input_tokens", 0)
                     usage.cost_usd = obj.get("total_cost_usd", 0.0)
 
